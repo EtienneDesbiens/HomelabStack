@@ -314,18 +314,28 @@ and run it" experience with nothing to install first:
   responds — Desktop can be installed but not started). If unavailable:
   - Not elevated → relaunches the whole script elevated (`Start-Process
     -Verb RunAs -Wait`) and exits with the elevated process's exit code.
-  - Elevated but WSL2's two Windows optional features aren't both enabled
-    → enables them and exits with reboot instructions. Re-running
-    `install.ps1` after the reboot resumes cleanly, same as any other
-    idempotent step in this design.
+  - Elevated but `wsl --status` doesn't exit cleanly → runs
+    `wsl --install --no-distro` (the officially supported one-shot command
+    that provisions the actual WSL2 kernel/platform, not just the
+    Windows optional features), re-checks, and only reports
+    reboot-required if `wsl --status` is *still* failing afterward. First
+    version of this checked only whether the two underlying Windows
+    optional features were toggled "Enabled" via DISM, which turned out
+    to be necessary but not sufficient — Docker Desktop still reported
+    "WSL not installed" with just the features on, since the WSL2
+    kernel/platform component itself was still missing. Asking `wsl.exe`
+    directly (the same thing Docker Desktop itself checks) avoids that
+    class of bug by construction. Re-running `install.ps1` after a
+    reboot resumes cleanly, same as any other idempotent step in this
+    design.
   - Elevated and WSL2-ready → downloads Docker Desktop's installer and
     runs it silently (`install --quiet --accept-license --backend=wsl-2`),
     then polls until the daemon responds (Desktop's first launch is slow).
 - Every external touchpoint (process launch, download, elevation check,
-  Windows feature query/enable, docker CLI) is an injectable scriptblock,
-  same pattern as `Deploy.psm1`/`Validate.psm1`, so the branching logic is
-  Pester-tested without ever running a real installer, touching Windows
-  features, or needing real elevation.
+  `wsl.exe`, docker CLI) is an injectable scriptblock, same pattern as
+  `Deploy.psm1`/`Validate.psm1`, so the branching logic is Pester-tested
+  without ever running a real installer, touching Windows features, or
+  needing real elevation.
 - Skipped entirely under `-WhatIf` (just logs whether it would install) or
   the new `-SkipDockerInstall` switch, for anyone managing Docker
   themselves or running outside Windows/Desktop's auto-install path.

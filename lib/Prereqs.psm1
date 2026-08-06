@@ -71,25 +71,19 @@ function Set-ElevationChecker {
     $script:ElevationChecker = $Checker
 }
 
-$script:WslFeatureChecker = {
-    param([string]$FeatureName)
-    $state = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction SilentlyContinue
-    return [bool]($state -and $state.State -eq 'Enabled')
+$script:WslRunner = {
+    param([string[]]$ArgumentList)
+    try {
+        $output = & wsl.exe @ArgumentList 2>&1
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($output | ForEach-Object { "$_" }) }
+    } catch {
+        [pscustomobject]@{ ExitCode = -1; Output = @($_.Exception.Message) }
+    }
 }
-function Get-WslFeatureChecker { $script:WslFeatureChecker }
-function Set-WslFeatureChecker {
-    param([Parameter(Mandatory)][scriptblock]$Checker)
-    $script:WslFeatureChecker = $Checker
-}
-
-$script:WslFeatureEnabler = {
-    param([string]$FeatureName)
-    Enable-WindowsOptionalFeature -Online -FeatureName $FeatureName -All -NoRestart | Out-Null
-}
-function Get-WslFeatureEnabler { $script:WslFeatureEnabler }
-function Set-WslFeatureEnabler {
-    param([Parameter(Mandatory)][scriptblock]$Enabler)
-    $script:WslFeatureEnabler = $Enabler
+function Get-WslRunner { $script:WslRunner }
+function Set-WslRunner {
+    param([Parameter(Mandatory)][scriptblock]$Runner)
+    $script:WslRunner = $Runner
 }
 
 # ---------------------------------------------------------------------------
@@ -117,44 +111,45 @@ function Test-DockerAvailable {
     return [bool](& $DockerInfoChecker)
 }
 
-$script:WslFeatureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
-
 function Test-WslReady {
     <#
     .SYNOPSIS
-        Docker Desktop's WSL2 backend (the only backend usable on Windows
-        Home editions, which lack Hyper-V) needs both Windows optional
-        features enabled. Requires elevation to query, same as the rest of
-        DISM/Windows-feature cmdlets.
+        True only if wsl.exe itself reports a working WSL2 platform -- the
+        same thing Docker Desktop checks on launch.
+
+        Earlier version of this function checked whether the two
+        underlying Windows optional features (Microsoft-Windows-Subsystem-
+        Linux, VirtualMachinePlatform) were toggled "Enabled" via DISM.
+        That turned out to be necessary but not sufficient: Docker Desktop
+        still reported "WSL not installed" with only the features on --
+        the actual WSL2 kernel/platform component (what `wsl --install`
+        provides) also has to be present. Asking wsl.exe directly avoids
+        this class of bug by construction, since it's the same source of
+        truth Docker Desktop itself uses.
     #>
     [CmdletBinding()]
-    param([scriptblock]$WslFeatureChecker)
-    if (-not $WslFeatureChecker) { $WslFeatureChecker = Get-WslFeatureChecker }
-    foreach ($f in $script:WslFeatureNames) {
-        if (-not (& $WslFeatureChecker $f)) { return $false }
-    }
-    return $true
+    param([scriptblock]$WslRunner, [scriptblock]$CommandChecker)
+    if (-not $CommandChecker) { $CommandChecker = Get-CommandChecker }
+    if (-not (& $CommandChecker 'wsl.exe')) { return $false }
+    if (-not $WslRunner) { $WslRunner = Get-WslRunner }
+    $result = & $WslRunner -ArgumentList @('--status')
+    return ($result.ExitCode -eq 0)
 }
 
-function Enable-WslFeatures {
+function Install-WslPlatform {
     <#
     .SYNOPSIS
-        Enables whichever of the two WSL2 features aren't already on.
-        Returns $true if it changed anything (meaning a reboot is now
-        required before Docker Desktop can finish installing).
+        Runs `wsl --install --no-distro` -- the officially supported,
+        idempotent one-shot command that enables the needed Windows
+        features AND installs the actual WSL2 kernel/platform component,
+        without pulling in a full Linux distro (Docker Desktop doesn't
+        need one on WSL2 -- it manages its own internal WSL2 utility VMs).
+        Safe to call even if some or all of this is already done.
     #>
     [CmdletBinding()]
-    param([scriptblock]$WslFeatureChecker, [scriptblock]$WslFeatureEnabler)
-    if (-not $WslFeatureChecker) { $WslFeatureChecker = Get-WslFeatureChecker }
-    if (-not $WslFeatureEnabler) { $WslFeatureEnabler = Get-WslFeatureEnabler }
-    $changed = $false
-    foreach ($f in $script:WslFeatureNames) {
-        if (-not (& $WslFeatureChecker $f)) {
-            & $WslFeatureEnabler $f
-            $changed = $true
-        }
-    }
-    return $changed
+    param([scriptblock]$WslRunner)
+    if (-not $WslRunner) { $WslRunner = Get-WslRunner }
+    return & $WslRunner -ArgumentList @('--install', '--no-distro')
 }
 
 # ---------------------------------------------------------------------------
@@ -182,8 +177,7 @@ function Install-DockerDesktop {
         [scriptblock]$CommandChecker,
         [scriptblock]$DockerInfoChecker,
         [scriptblock]$ElevationChecker,
-        [scriptblock]$WslFeatureChecker,
-        [scriptblock]$WslFeatureEnabler,
+        [scriptblock]$WslRunner,
         [string]$InstallerUrl = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
         [string]$DownloadPath,
         [int]$StartupTimeoutSeconds = 180,
@@ -204,9 +198,15 @@ function Install-DockerDesktop {
         return [pscustomobject]@{ Status = 'needs-elevation'; Detail = 'Administrator privileges are required to install Docker Desktop.' }
     }
 
-    if (-not (Test-WslReady -WslFeatureChecker $WslFeatureChecker)) {
-        Enable-WslFeatures -WslFeatureChecker $WslFeatureChecker -WslFeatureEnabler $WslFeatureEnabler | Out-Null
-        return [pscustomobject]@{ Status = 'reboot-required'; Detail = 'Enabled the WSL2 Windows features -- a reboot is required before Docker Desktop can finish installing. Reboot, then re-run install.ps1; it resumes automatically.' }
+    if (-not (Test-WslReady -WslRunner $WslRunner -CommandChecker $CommandChecker)) {
+        Install-WslPlatform -WslRunner $WslRunner | Out-Null
+        # Re-check rather than assuming a reboot is needed -- on some
+        # machines (virtualization already on in firmware, etc.) WSL2
+        # becomes usable immediately and there's no reason to force a
+        # reboot the user doesn't actually need.
+        if (-not (Test-WslReady -WslRunner $WslRunner -CommandChecker $CommandChecker)) {
+            return [pscustomobject]@{ Status = 'reboot-required'; Detail = 'Installed the WSL2 platform -- a reboot is required before Docker Desktop can finish installing. Reboot, then re-run install.ps1; it resumes automatically.' }
+        }
     }
 
     & $Downloader -Url $InstallerUrl -Destination $DownloadPath
@@ -248,11 +248,10 @@ function Install-DockerDesktop {
 }
 
 Export-ModuleMember -Function `
-    Test-IsElevated, Test-DockerAvailable, Test-WslReady, Enable-WslFeatures, Install-DockerDesktop, `
+    Test-IsElevated, Test-DockerAvailable, Test-WslReady, Install-WslPlatform, Install-DockerDesktop, `
     Get-PrereqProcessRunner, Set-PrereqProcessRunner, `
     Get-Downloader, Set-Downloader, `
     Get-CommandChecker, Set-CommandChecker, `
     Get-DockerInfoChecker, Set-DockerInfoChecker, `
     Get-ElevationChecker, Set-ElevationChecker, `
-    Get-WslFeatureChecker, Set-WslFeatureChecker, `
-    Get-WslFeatureEnabler, Set-WslFeatureEnabler
+    Get-WslRunner, Set-WslRunner

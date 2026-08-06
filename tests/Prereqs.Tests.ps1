@@ -61,6 +61,63 @@ Describe 'Install-WslPlatform' {
     }
 }
 
+Describe 'Test-DockerInstalled' {
+    # Every test here mocks -PathTester explicitly, even where the
+    # CommandChecker already decides the outcome -- otherwise the default
+    # PathTester does a *real* Test-Path against Program Files, and the
+    # result would silently depend on whether Docker happens to be
+    # installed on whatever machine runs this suite.
+
+    It 'is true when the docker command resolves, even if the daemon is not running' {
+        $result = Test-DockerInstalled -CommandChecker { param($n) $n -eq 'docker' } -PathTester { param($p) $false }
+        $result | Should Be $true
+    }
+
+    It 'is true when the command does not resolve but the Desktop app exe is present' {
+        $result = Test-DockerInstalled -CommandChecker { param($n) $false } -PathTester { param($p) $true }
+        $result | Should Be $true
+    }
+
+    It 'is false when neither the command nor the app exe are present' {
+        $result = Test-DockerInstalled -CommandChecker { param($n) $false } -PathTester { param($p) $false }
+        $result | Should Be $false
+    }
+}
+
+Describe 'Start-DockerDesktopAndWait' {
+
+    It 'launches the app when its exe is present, then polls until available' {
+        $box = @{ launched = $false; checkCount = 0 }
+        $result = Start-DockerDesktopAndWait `
+            -CommandChecker { param($n) $true } `
+            -DockerInfoChecker { $box.checkCount++; return ($box.checkCount -ge 2) }.GetNewClosure() `
+            -PathTester { param($p) $true } `
+            -AppLauncher { param($p) $box.launched = $true }.GetNewClosure() `
+            -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
+        $result.Status | Should Be 'installed'
+        $box.launched | Should Be $true
+    }
+
+    It 'does not try to launch anything when the exe is not present' {
+        $box = @{ launched = $false }
+        $result = Start-DockerDesktopAndWait `
+            -CommandChecker { param($n) $true } -DockerInfoChecker { $true } `
+            -PathTester { param($p) $false } `
+            -AppLauncher { param($p) $box.launched = $true }.GetNewClosure() `
+            -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
+        $result.Status | Should Be 'installed'
+        $box.launched | Should Be $false
+    }
+
+    It 'reports failed if Docker never responds within the timeout' {
+        $result = Start-DockerDesktopAndWait `
+            -CommandChecker { param($n) $false } -DockerInfoChecker { $false } `
+            -PathTester { param($p) $false } -AppLauncher { param($p) } `
+            -PollIntervalSeconds 0 -StartupTimeoutSeconds 0
+        $result.Status | Should Be 'failed'
+    }
+}
+
 Describe 'Install-DockerDesktop' {
 
     It 'short-circuits when Docker is already available -- no download, no install' {
@@ -75,12 +132,35 @@ Describe 'Install-DockerDesktop' {
         $box.installed | Should Be $false
     }
 
-    It 'reports needs-elevation and does not attempt install when not elevated' {
+    It 'starts Docker Desktop without elevation or reinstalling when it is installed but not running' {
+        # This is the exact real-world case that motivated this test:
+        # Desktop doesn't always auto-launch after install or a reboot,
+        # and an earlier version of this code treated "not available" as
+        # "not installed" and tried to reinstall from scratch, needlessly
+        # forcing a UAC prompt in install.ps1's wrapper along the way.
+        $box = @{ downloaded = $false; installArgs = $null; launched = $false; checkCount = 0 }
+        $result = Install-DockerDesktop `
+            -CommandChecker { param($n) $n -eq 'docker' } `
+            -DockerInfoChecker { $box.checkCount++; return ($box.checkCount -ge 2) }.GetNewClosure() `
+            -ElevationChecker { $false } `
+            -PathTester { param($p) $true } `
+            -AppLauncher { param($p) $box.launched = $true }.GetNewClosure() `
+            -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure() `
+            -ProcessRunner { param($FilePath, $ArgumentList) $box.installArgs = $ArgumentList; [pscustomobject]@{ ExitCode = 0 } }.GetNewClosure() `
+            -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
+        $result.Status | Should Be 'installed'
+        $box.launched | Should Be $true
+        $box.downloaded | Should Be $false
+        $box.installArgs | Should Be $null
+    }
+
+    It 'reports needs-elevation and does not attempt install when not elevated and not installed' {
         $box = @{ downloaded = $false }
         $result = Install-DockerDesktop `
             -CommandChecker { param($n) $false } -DockerInfoChecker { $false } `
-            -ElevationChecker { $false } `
-            -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure()
+            -ElevationChecker { $false } -PathTester { param($p) $false } `
+            -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure() `
+            -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
         $result.Status | Should Be 'needs-elevation'
         $box.downloaded | Should Be $false
     }
@@ -88,9 +168,9 @@ Describe 'Install-DockerDesktop' {
     It 'installs the WSL2 platform and reports reboot-required if it is still not ready afterward, without downloading anything' {
         $box = @{ downloaded = $false; wslInstallRan = $false }
         $result = Install-DockerDesktop `
-            -CommandChecker { param($n) $n -ne 'docker' } `
+            -CommandChecker { param($n) $n -eq 'wsl.exe' } `
             -DockerInfoChecker { $false } `
-            -ElevationChecker { $true } `
+            -ElevationChecker { $true } -PathTester { param($p) $false } `
             -WslRunner {
                 param($ArgumentList)
                 if ($ArgumentList -contains '--install') { $box.wslInstallRan = $true }
@@ -104,23 +184,23 @@ Describe 'Install-DockerDesktop' {
     }
 
     It 'continues installing Docker in the same run when WSL2 becomes ready without a reboot' {
-        # CommandChecker is unconditionally true here (both 'docker' and
-        # 'wsl.exe' "exist") -- only DockerInfoChecker's call count
-        # distinguishes "before install" from "after install, polled".
-        # An earlier version of this test used a CommandChecker that
-        # permanently returned $false for 'docker', which meant the
-        # post-install polling loop could *never* succeed -- it ran for
-        # the full real 180s default timeout and hung the test run.
-        # -StartupTimeoutSeconds is set explicitly below as a second
-        # safety net against that class of bug.
-        $box = @{ downloaded = $false; statusCallCount = 0; dockerCheckCount = 0 }
+        # CommandChecker tracks a "has the installer run yet" flag for
+        # 'docker' specifically, rather than being unconditionally true --
+        # an earlier version of this test used an unconditional CommandChecker,
+        # which (after the Test-DockerInstalled short-circuit was added)
+        # made Install-DockerDesktop divert into the "already installed,
+        # just start it" branch instead of exercising the WSL+install path
+        # this test means to cover.
+        $box = @{ downloaded = $false; statusCallCount = 0; dockerInstalled = $false }
         $result = Install-DockerDesktop `
-            -CommandChecker { param($n) $true } `
-            -DockerInfoChecker {
-                $box.dockerCheckCount++
-                return ($box.dockerCheckCount -ge 2)   # not available at the initial check, available once polled post-install
+            -CommandChecker {
+                param($n)
+                if ($n -eq 'wsl.exe') { return $true }
+                if ($n -eq 'docker') { return $box.dockerInstalled }
+                return $false
             }.GetNewClosure() `
-            -ElevationChecker { $true } `
+            -DockerInfoChecker { $true } `
+            -ElevationChecker { $true } -PathTester { param($p) $false } `
             -WslRunner {
                 param($ArgumentList)
                 if ($ArgumentList -contains '--status') { $box.statusCallCount++ }
@@ -129,24 +209,26 @@ Describe 'Install-DockerDesktop' {
                 return [pscustomobject]@{ ExitCode = $exitCode; Output = @() }
             }.GetNewClosure() `
             -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure() `
-            -ProcessRunner { param($FilePath, $ArgumentList) [pscustomobject]@{ ExitCode = 0 } } `
+            -ProcessRunner { param($FilePath, $ArgumentList) $box.dockerInstalled = $true; [pscustomobject]@{ ExitCode = 0 } }.GetNewClosure() `
             -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
         $result.Status | Should Be 'installed'
         $box.downloaded | Should Be $true
     }
 
     It 'downloads and silently installs when elevated and WSL2 is already ready, then confirms it started' {
-        $box = @{ downloadedUrl = $null; installArgs = $null; checkCount = 0 }
+        $box = @{ downloadedUrl = $null; installArgs = $null; dockerInstalled = $false }
         $result = Install-DockerDesktop `
-            -CommandChecker { param($n) $true } `
-            -DockerInfoChecker {
-                $box.checkCount++
-                return ($box.checkCount -ge 2)   # not running yet on first poll, running on second
+            -CommandChecker {
+                param($n)
+                if ($n -eq 'wsl.exe') { return $true }
+                if ($n -eq 'docker') { return $box.dockerInstalled }
+                return $false
             }.GetNewClosure() `
-            -ElevationChecker { $true } `
+            -DockerInfoChecker { $true } `
+            -ElevationChecker { $true } -PathTester { param($p) $false } `
             -WslRunner { param($ArgumentList) [pscustomobject]@{ ExitCode = 0; Output = @() } } `
             -Downloader { param($Url, $Destination) $box.downloadedUrl = $Url }.GetNewClosure() `
-            -ProcessRunner { param($FilePath, $ArgumentList) $box.installArgs = $ArgumentList; [pscustomobject]@{ ExitCode = 0 } }.GetNewClosure() `
+            -ProcessRunner { param($FilePath, $ArgumentList) $box.installArgs = $ArgumentList; $box.dockerInstalled = $true; [pscustomobject]@{ ExitCode = 0 } }.GetNewClosure() `
             -PollIntervalSeconds 0 -StartupTimeoutSeconds 5
         $result.Status | Should Be 'installed'
         $box.downloadedUrl | Should Match 'desktop.docker.com'
@@ -156,8 +238,8 @@ Describe 'Install-DockerDesktop' {
 
     It 'reports failed when the installer exits non-zero' {
         $result = Install-DockerDesktop `
-            -CommandChecker { param($n) $n -ne 'docker' } -DockerInfoChecker { $false } `
-            -ElevationChecker { $true } `
+            -CommandChecker { param($n) $n -eq 'wsl.exe' } -DockerInfoChecker { $false } `
+            -ElevationChecker { $true } -PathTester { param($p) $false } `
             -WslRunner { param($ArgumentList) [pscustomobject]@{ ExitCode = 0; Output = @() } } `
             -Downloader { param($Url, $Destination) } `
             -ProcessRunner { param($FilePath, $ArgumentList) [pscustomobject]@{ ExitCode = 1 } } `
@@ -167,8 +249,8 @@ Describe 'Install-DockerDesktop' {
 
     It 'reports failed if Docker never responds within the startup timeout' {
         $result = Install-DockerDesktop `
-            -CommandChecker { param($n) $n -ne 'docker' } -DockerInfoChecker { $false } `
-            -ElevationChecker { $true } `
+            -CommandChecker { param($n) $n -eq 'wsl.exe' } -DockerInfoChecker { $false } `
+            -ElevationChecker { $true } -PathTester { param($p) $false } `
             -WslRunner { param($ArgumentList) [pscustomobject]@{ ExitCode = 0; Output = @() } } `
             -Downloader { param($Url, $Destination) } `
             -ProcessRunner { param($FilePath, $ArgumentList) [pscustomobject]@{ ExitCode = 0 } } `

@@ -60,7 +60,29 @@ Import-Module (Join-Path $repoRoot 'lib\Report.psm1') -Force
 
 if (-not $WhatIf -and -not $SkipDockerInstall) {
     if (-not (Test-DockerAvailable)) {
-        if (-not (Test-IsElevated)) {
+        # Installed but not currently running (Desktop doesn't always
+        # auto-launch after install or a reboot) needs no elevation --
+        # only a genuine from-scratch install does. Checking this before
+        # deciding whether to relaunch elevated avoids a needless UAC
+        # prompt just to start an app that's already there.
+        if ((Test-DockerInstalled) -or (Test-IsElevated)) {
+            if (Test-DockerInstalled) {
+                Write-Host "Docker is installed but not running -- starting Docker Desktop (this can take a minute on first launch)..."
+            } else {
+                Write-Host "`nDocker not found -- installing Docker Desktop. This can take several minutes on a slow connection."
+            }
+            $dockerInstall = Install-DockerDesktop
+            Write-Host "  $($dockerInstall.Detail)"
+
+            if ($dockerInstall.Status -eq 'reboot-required') {
+                Write-Host "`nReboot this machine, then run install.ps1 again -- it picks up right where it left off (config.json and everything already deployed is untouched)."
+                exit 0
+            }
+            if ($dockerInstall.Status -in @('failed', 'needs-elevation')) {
+                Write-Host "`nCouldn't finish getting Docker running automatically. Open Docker Desktop manually (or install it from https://www.docker.com/products/docker-desktop/ ), then re-run install.ps1 (or pass -SkipDockerInstall if you're managing it yourself)."
+                exit 1
+            }
+        } else {
             Write-Host "Docker wasn't found. Relaunching elevated to install Docker Desktop -- approve the Administrator prompt that's about to appear."
             # Elements are individually quoted -- Start-Process's -ArgumentList
             # joins the array with spaces but does not auto-quote elements
@@ -72,23 +94,14 @@ if (-not $WhatIf -and -not $SkipDockerInstall) {
             $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
             exit $proc.ExitCode
         }
-
-        Write-Host "`nDocker not found -- installing Docker Desktop. This can take several minutes on a slow connection."
-        $dockerInstall = Install-DockerDesktop
-        Write-Host "  $($dockerInstall.Detail)"
-
-        if ($dockerInstall.Status -eq 'reboot-required') {
-            Write-Host "`nReboot this machine, then run install.ps1 again -- it picks up right where it left off (config.json and everything already deployed is untouched)."
-            exit 0
-        }
-        if ($dockerInstall.Status -in @('failed', 'needs-elevation')) {
-            Write-Host "`nCouldn't finish installing Docker automatically. Install Docker Desktop manually from https://www.docker.com/products/docker-desktop/ , then re-run install.ps1 (or pass -SkipDockerInstall if you're managing it yourself)."
-            exit 1
-        }
     }
 } elseif ($WhatIf -and -not $SkipDockerInstall) {
     if (-not (Test-DockerAvailable)) {
-        Write-Host "`n[docker] would install Docker Desktop (not currently available; real install is skipped under -WhatIf)."
+        if (Test-DockerInstalled) {
+            Write-Host "`n[docker] would start Docker Desktop (installed but not currently running; real start is skipped under -WhatIf)."
+        } else {
+            Write-Host "`n[docker] would install Docker Desktop (not currently available; real install is skipped under -WhatIf)."
+        }
     }
 }
 

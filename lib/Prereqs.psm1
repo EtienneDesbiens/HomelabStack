@@ -60,6 +60,20 @@ function Set-DockerInfoChecker {
     $script:DockerInfoChecker = $Checker
 }
 
+$script:PathTester = { param([string]$Path) Test-Path -Path $Path }
+function Get-PathTester { $script:PathTester }
+function Set-PathTester {
+    param([Parameter(Mandatory)][scriptblock]$Tester)
+    $script:PathTester = $Tester
+}
+
+$script:AppLauncher = { param([string]$Path) Start-Process -FilePath $Path | Out-Null }
+function Get-AppLauncher { $script:AppLauncher }
+function Set-AppLauncher {
+    param([Parameter(Mandatory)][scriptblock]$Launcher)
+    $script:AppLauncher = $Launcher
+}
+
 $script:ElevationChecker = {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -111,6 +125,68 @@ function Test-DockerAvailable {
     return [bool](& $DockerInfoChecker)
 }
 
+function Get-DockerDesktopExePath {
+    Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+}
+
+function Test-DockerInstalled {
+    <#
+    .SYNOPSIS
+        True if Docker appears to be installed at all -- the CLI resolves
+        on PATH, or the Desktop app is present on disk -- regardless of
+        whether the daemon is currently running.
+
+        Distinguishes "not installed, run the full installer" from
+        "installed but not started" (Desktop doesn't always auto-launch
+        after install or after a reboot). Without this distinction,
+        Install-DockerDesktop would re-run the entire download+install
+        flow -- and demand an elevation/UAC prompt -- just because the app
+        happened to not be running yet, which is a common, harmless state.
+    #>
+    [CmdletBinding()]
+    param([scriptblock]$CommandChecker, [scriptblock]$PathTester)
+    if (-not $CommandChecker) { $CommandChecker = Get-CommandChecker }
+    if (& $CommandChecker 'docker') { return $true }
+    if (-not $PathTester) { $PathTester = Get-PathTester }
+    return [bool](& $PathTester (Get-DockerDesktopExePath))
+}
+
+function Start-DockerDesktopAndWait {
+    <#
+    .SYNOPSIS
+        Launches Docker Desktop (if its exe is present) and polls until
+        the daemon responds or the timeout elapses. No elevation needed --
+        starting an already-installed app doesn't require it.
+    #>
+    [CmdletBinding()]
+    param(
+        [scriptblock]$CommandChecker,
+        [scriptblock]$DockerInfoChecker,
+        [scriptblock]$PathTester,
+        [scriptblock]$AppLauncher,
+        [int]$StartupTimeoutSeconds = 180,
+        [int]$PollIntervalSeconds = 5
+    )
+    if (-not $CommandChecker) { $CommandChecker = Get-CommandChecker }
+    if (-not $DockerInfoChecker) { $DockerInfoChecker = Get-DockerInfoChecker }
+    if (-not $PathTester) { $PathTester = Get-PathTester }
+    if (-not $AppLauncher) { $AppLauncher = Get-AppLauncher }
+
+    $dockerDesktopExe = Get-DockerDesktopExePath
+    if (& $PathTester $dockerDesktopExe) {
+        & $AppLauncher $dockerDesktopExe
+    }
+
+    $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-DockerAvailable -CommandChecker $CommandChecker -DockerInfoChecker $DockerInfoChecker) {
+            return [pscustomobject]@{ Status = 'installed'; Detail = 'Docker Desktop is running.' }
+        }
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+    return [pscustomobject]@{ Status = 'failed'; Detail = "Docker Desktop didn't respond within $StartupTimeoutSeconds seconds. It may still be starting (first launch can be slow) -- give it a minute and re-run install.ps1, or open Docker Desktop manually and check for errors there." }
+}
+
 function Test-WslReady {
     <#
     .SYNOPSIS
@@ -159,10 +235,13 @@ function Install-WslPlatform {
 function Install-DockerDesktop {
     <#
     .SYNOPSIS
-        Downloads and silently installs Docker Desktop, enabling WSL2
-        Windows features first if needed. Never call this under -WhatIf --
-        the caller should skip it and just log what would happen, same as
-        every other real-system-change path in this codebase.
+        Gets Docker running by whichever path is actually needed:
+        already running -> no-op; installed but not started -> just
+        launch it (no elevation needed for that); not installed at all ->
+        elevate, provision WSL2, download and silently install, then
+        launch it. Never call this under -WhatIf -- the caller should
+        skip it and just log what would happen, same as every other
+        real-system-change path in this codebase.
 
     .OUTPUTS
         A status object with .Status in:
@@ -178,6 +257,8 @@ function Install-DockerDesktop {
         [scriptblock]$DockerInfoChecker,
         [scriptblock]$ElevationChecker,
         [scriptblock]$WslRunner,
+        [scriptblock]$PathTester,
+        [scriptblock]$AppLauncher,
         [string]$InstallerUrl = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
         [string]$DownloadPath,
         [int]$StartupTimeoutSeconds = 180,
@@ -192,6 +273,12 @@ function Install-DockerDesktop {
 
     if (Test-DockerAvailable -CommandChecker $CommandChecker -DockerInfoChecker $DockerInfoChecker) {
         return [pscustomobject]@{ Status = 'already-available'; Detail = 'Docker is already installed and running.' }
+    }
+
+    if (Test-DockerInstalled -CommandChecker $CommandChecker -PathTester $PathTester) {
+        return Start-DockerDesktopAndWait -CommandChecker $CommandChecker -DockerInfoChecker $DockerInfoChecker `
+            -PathTester $PathTester -AppLauncher $AppLauncher `
+            -StartupTimeoutSeconds $StartupTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
     }
 
     if (-not (Test-IsElevated -ElevationChecker $ElevationChecker)) {
@@ -231,27 +318,19 @@ function Install-DockerDesktop {
         $env:Path = "$dockerCliDir;$env:Path"
     }
 
-    $dockerDesktopExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
-    if (Test-Path -Path $dockerDesktopExe) {
-        Start-Process -FilePath $dockerDesktopExe | Out-Null
-    }
-
-    $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-DockerAvailable -CommandChecker $CommandChecker -DockerInfoChecker $DockerInfoChecker) {
-            return [pscustomobject]@{ Status = 'installed'; Detail = 'Docker Desktop installed and running.' }
-        }
-        Start-Sleep -Seconds $PollIntervalSeconds
-    }
-
-    return [pscustomobject]@{ Status = 'failed'; Detail = "Docker Desktop was installed but hasn't responded within $StartupTimeoutSeconds seconds. It may still be starting up (first launch can be slow) -- give it a minute and re-run install.ps1." }
+    return Start-DockerDesktopAndWait -CommandChecker $CommandChecker -DockerInfoChecker $DockerInfoChecker `
+        -PathTester $PathTester -AppLauncher $AppLauncher `
+        -StartupTimeoutSeconds $StartupTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
 }
 
 Export-ModuleMember -Function `
-    Test-IsElevated, Test-DockerAvailable, Test-WslReady, Install-WslPlatform, Install-DockerDesktop, `
+    Test-IsElevated, Test-DockerAvailable, Test-DockerInstalled, Start-DockerDesktopAndWait, `
+    Test-WslReady, Install-WslPlatform, Install-DockerDesktop, `
     Get-PrereqProcessRunner, Set-PrereqProcessRunner, `
     Get-Downloader, Set-Downloader, `
     Get-CommandChecker, Set-CommandChecker, `
     Get-DockerInfoChecker, Set-DockerInfoChecker, `
     Get-ElevationChecker, Set-ElevationChecker, `
-    Get-WslRunner, Set-WslRunner
+    Get-WslRunner, Set-WslRunner, `
+    Get-PathTester, Set-PathTester, `
+    Get-AppLauncher, Set-AppLauncher

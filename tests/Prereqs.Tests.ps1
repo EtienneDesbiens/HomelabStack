@@ -16,6 +16,82 @@
 $moduleRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $moduleRoot 'lib\Prereqs.psm1') -Force
 
+Describe 'Test-TailscaleInstalled' {
+    # Every test here mocks -PathTester explicitly -- same reasoning as
+    # Test-DockerInstalled's tests: without it, the default PathTester
+    # does a real Test-Path against Program Files, and the result would
+    # silently depend on whether Tailscale happens to be installed on
+    # whatever machine runs this suite.
+
+    It 'is true when the tailscale command resolves' {
+        $result = Test-TailscaleInstalled -CommandChecker { param($n) $n -eq 'tailscale' } -PathTester { param($p) $false }
+        $result | Should Be $true
+    }
+
+    It 'is true when the command does not resolve but the exe is present' {
+        $result = Test-TailscaleInstalled -CommandChecker { param($n) $false } -PathTester { param($p) $true }
+        $result | Should Be $true
+    }
+
+    It 'is false when neither the command nor the exe are present' {
+        $result = Test-TailscaleInstalled -CommandChecker { param($n) $false } -PathTester { param($p) $false }
+        $result | Should Be $false
+    }
+}
+
+Describe 'Install-TailscaleClient' {
+
+    It 'short-circuits when already installed -- no download, no install' {
+        $box = @{ downloaded = $false }
+        $result = Install-TailscaleClient `
+            -CommandChecker { param($n) $true } -PathTester { param($p) $true } `
+            -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure()
+        $result.Status | Should Be 'already-installed'
+        $box.downloaded | Should Be $false
+    }
+
+    It 'reports needs-elevation and does not attempt install when not elevated' {
+        $box = @{ downloaded = $false }
+        $result = Install-TailscaleClient `
+            -CommandChecker { param($n) $false } -PathTester { param($p) $false } `
+            -ElevationChecker { $false } `
+            -Downloader { param($Url, $Destination) $box.downloaded = $true }.GetNewClosure()
+        $result.Status | Should Be 'needs-elevation'
+        $box.downloaded | Should Be $false
+    }
+
+    It 'downloads and silently installs when elevated and not yet installed' {
+        $box = @{ downloadedUrl = $null; installArgs = $null; installed = $false }
+        $result = Install-TailscaleClient `
+            -CommandChecker { param($n) if ($n -eq 'tailscale') { return $box.installed }; return $false } `
+            -PathTester { param($p) $false } `
+            -ElevationChecker { $true } `
+            -Downloader { param($Url, $Destination) $box.downloadedUrl = $Url }.GetNewClosure() `
+            -ProcessRunner { param($FilePath, $ArgumentList) $box.installArgs = $ArgumentList; $box.installed = $true; [pscustomobject]@{ ExitCode = 0 } }.GetNewClosure()
+        $result.Status | Should Be 'installed'
+        $box.downloadedUrl | Should Match 'tailscale'
+        ($box.installArgs -join ' ') | Should Match '/quiet'
+    }
+
+    It 'reports failed when the installer exits non-zero' {
+        $result = Install-TailscaleClient `
+            -CommandChecker { param($n) $false } -PathTester { param($p) $false } `
+            -ElevationChecker { $true } `
+            -Downloader { param($Url, $Destination) } `
+            -ProcessRunner { param($FilePath, $ArgumentList) [pscustomobject]@{ ExitCode = 1 } }
+        $result.Status | Should Be 'failed'
+    }
+
+    It 'reports failed if the client still is not detected right after a successful installer exit' {
+        $result = Install-TailscaleClient `
+            -CommandChecker { param($n) $false } -PathTester { param($p) $false } `
+            -ElevationChecker { $true } `
+            -Downloader { param($Url, $Destination) } `
+            -ProcessRunner { param($FilePath, $ArgumentList) [pscustomobject]@{ ExitCode = 0 } }
+        $result.Status | Should Be 'failed'
+    }
+}
+
 Describe 'Test-DockerAvailable' {
 
     It 'is false when the docker command does not exist' {

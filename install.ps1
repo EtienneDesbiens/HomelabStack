@@ -26,6 +26,13 @@
     yourself, or where the auto-install path (Windows-only, needs
     elevation) doesn't apply.
 
+.PARAMETER SkipTailscaleInstall
+    Skip the Tailscale client bootstrap entirely, even if it isn't
+    installed. For environments where you're deliberately managing
+    Tailscale yourself (or using a different remote-access mesh -- see the
+    "Roles and interchangeable options" section of the agnostic
+    implementation plan).
+
     See docs/superpowers/specs/2026-08-06-installer-wizard-design.md for
     the design this script implements.
 #>
@@ -34,7 +41,8 @@ param(
     [switch]$WhatIf,
     [string]$ConfigPath,
     [string[]]$Select,
-    [switch]$SkipDockerInstall
+    [switch]$SkipDockerInstall,
+    [switch]$SkipTailscaleInstall
 )
 
 Set-StrictMode -Version Latest
@@ -51,21 +59,56 @@ Import-Module (Join-Path $repoRoot 'lib\Validate.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Report.psm1') -Force
 
 # ---------------------------------------------------------------------------
-# Docker bootstrap (Wizard flow step 0, added on top of the original design
+# Prereq bootstrap (Wizard flow step 0, added on top of the original design
 # so this repo is a "clone it and run it" experience with nothing to
-# install first). Skipped entirely under -WhatIf or -SkipDockerInstall --
-# it's real system state (Windows features, an elevated installer run),
-# not something a dry run should ever touch.
+# install first). Docker and Tailscale are checked together so there's at
+# most one elevation/UAC prompt total, not one per tool. Skipped entirely
+# under -WhatIf, or per-tool via -SkipDockerInstall/-SkipTailscaleInstall --
+# it's real system state (Windows features, elevated installer runs), not
+# something a dry run should ever touch.
 # ---------------------------------------------------------------------------
 
-if (-not $WhatIf -and -not $SkipDockerInstall) {
-    if (-not (Test-DockerAvailable)) {
-        # Installed but not currently running (Desktop doesn't always
-        # auto-launch after install or a reboot) needs no elevation --
-        # only a genuine from-scratch install does. Checking this before
-        # deciding whether to relaunch elevated avoids a needless UAC
-        # prompt just to start an app that's already there.
-        if ((Test-DockerInstalled) -or (Test-IsElevated)) {
+if ($WhatIf) {
+    if (-not $SkipDockerInstall -and -not (Test-DockerAvailable)) {
+        if (Test-DockerInstalled) {
+            Write-Host "`n[docker] would start Docker Desktop (installed but not currently running; real start is skipped under -WhatIf)."
+        } else {
+            Write-Host "`n[docker] would install Docker Desktop (not currently available; real install is skipped under -WhatIf)."
+        }
+    }
+    if (-not $SkipTailscaleInstall -and -not (Test-TailscaleInstalled)) {
+        Write-Host "`n[tailscale] would install the Tailscale client (not currently installed; real install is skipped under -WhatIf)."
+    }
+} else {
+    $needsDockerWork = -not $SkipDockerInstall -and -not (Test-DockerAvailable)
+    $needsTailscaleWork = -not $SkipTailscaleInstall -and -not (Test-TailscaleInstalled)
+
+    if ($needsDockerWork -or $needsTailscaleWork) {
+        # Docker installed-but-not-running needs no elevation -- only a
+        # genuine from-scratch install of either tool does. Checking this
+        # up front avoids a needless UAC prompt just to start an app
+        # that's already there.
+        $dockerNeedsFreshInstall = $needsDockerWork -and -not (Test-DockerInstalled)
+        $tailscaleNeedsFreshInstall = $needsTailscaleWork
+
+        if (($dockerNeedsFreshInstall -or $tailscaleNeedsFreshInstall) -and -not (Test-IsElevated)) {
+            Write-Host "Relaunching elevated to install what's missing -- approve the Administrator prompt that's about to appear."
+            # Elements are individually quoted -- Start-Process's -ArgumentList
+            # joins the array with spaces but does not auto-quote elements
+            # itself, so an install path containing spaces would otherwise
+            # split into multiple arguments. Skip switches are carried
+            # through explicitly -- Start-Process launches a brand new
+            # process that only sees arguments actually passed to it.
+            $relaunchArgs = [System.Collections.Generic.List[string]]::new()
+            $relaunchArgs.AddRange([string[]]@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-ConfigPath', "`"$ConfigPath`""))
+            if ($Select) { $relaunchArgs.AddRange([string[]]@('-Select', "`"$($Select -join ',')`"")) }
+            if ($SkipDockerInstall) { $relaunchArgs.Add('-SkipDockerInstall') }
+            if ($SkipTailscaleInstall) { $relaunchArgs.Add('-SkipTailscaleInstall') }
+            $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
+            exit $proc.ExitCode
+        }
+
+        if ($needsDockerWork) {
             if (Test-DockerInstalled) {
                 Write-Host "Docker is installed but not running -- starting Docker Desktop (this can take a minute on first launch)..."
             } else {
@@ -83,25 +126,16 @@ if (-not $WhatIf -and -not $SkipDockerInstall) {
                 Write-Host "`nCouldn't finish getting Docker running automatically. Open Docker Desktop manually (or install it from https://www.docker.com/products/docker-desktop/ ), then re-run install.ps1 (or pass -SkipDockerInstall if you're managing it yourself)."
                 exit 1
             }
-        } else {
-            Write-Host "Docker wasn't found. Relaunching elevated to install Docker Desktop -- approve the Administrator prompt that's about to appear."
-            # Elements are individually quoted -- Start-Process's -ArgumentList
-            # joins the array with spaces but does not auto-quote elements
-            # itself, so an install path containing spaces would otherwise
-            # split into multiple arguments.
-            $relaunchArgs = [System.Collections.Generic.List[string]]::new()
-            $relaunchArgs.AddRange([string[]]@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-ConfigPath', "`"$ConfigPath`""))
-            if ($Select) { $relaunchArgs.AddRange([string[]]@('-Select', "`"$($Select -join ',')`"")) }
-            $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
-            exit $proc.ExitCode
         }
-    }
-} elseif ($WhatIf -and -not $SkipDockerInstall) {
-    if (-not (Test-DockerAvailable)) {
-        if (Test-DockerInstalled) {
-            Write-Host "`n[docker] would start Docker Desktop (installed but not currently running; real start is skipped under -WhatIf)."
-        } else {
-            Write-Host "`n[docker] would install Docker Desktop (not currently available; real install is skipped under -WhatIf)."
+
+        if ($needsTailscaleWork) {
+            Write-Host "`nTailscale not found -- installing the Tailscale client. You'll still log in yourself once it's installed (that step needs your own account, further down)."
+            $tailscaleInstall = Install-TailscaleClient
+            Write-Host "  $($tailscaleInstall.Detail)"
+            if ($tailscaleInstall.Status -in @('failed', 'needs-elevation')) {
+                Write-Host "`nCouldn't install Tailscale automatically. Install it manually from https://tailscale.com/download/windows , then re-run install.ps1 (or pass -SkipTailscaleInstall if you're managing it yourself)."
+                exit 1
+            }
         }
     }
 }

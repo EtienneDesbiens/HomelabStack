@@ -1,13 +1,16 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Checks for and, if missing, installs Docker Desktop -- so install.ps1
-    can be a true "clone this repo and run it" experience with no separate
-    Docker install required first.
+    Checks for and, if missing, installs Docker Desktop and the Tailscale
+    client -- so install.ps1 can be a true "clone this repo and run it"
+    experience with nothing to install first. Tailscale's actual login
+    (opens a browser for your own account) is never automated here -- it
+    stays an interactive step, handled by the tailscale-login manual gate
+    once the client itself is present.
 
     This is the one module in the stack that makes real system changes
-    outside of Docker itself (Windows optional features, an elevated
-    installer run). Every external touchpoint still goes through an
+    outside of Docker itself (Windows optional features, elevated
+    installer runs). Every external touchpoint still goes through an
     injectable scriptblock, same pattern as Deploy.psm1/Validate.psm1, so
     the decision logic (already-available / needs-elevation / reboot-
     required / installed / failed) is unit-testable without ever running a
@@ -323,9 +326,94 @@ function Install-DockerDesktop {
         -StartupTimeoutSeconds $StartupTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
 }
 
+# ---------------------------------------------------------------------------
+# Tailscale
+# ---------------------------------------------------------------------------
+
+function Get-TailscaleExePath {
+    Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+}
+
+function Test-TailscaleInstalled {
+    <#
+    .SYNOPSIS
+        True if the tailscale CLI resolves on PATH, or its exe is present
+        on disk -- regardless of login state. Login is a separate,
+        inherently interactive concern (opens a browser for your own
+        account) handled by the tailscale-login manual gate, not this
+        check.
+    #>
+    [CmdletBinding()]
+    param([scriptblock]$CommandChecker, [scriptblock]$PathTester)
+    if (-not $CommandChecker) { $CommandChecker = Get-CommandChecker }
+    if (& $CommandChecker 'tailscale') { return $true }
+    if (-not $PathTester) { $PathTester = Get-PathTester }
+    return [bool](& $PathTester (Get-TailscaleExePath))
+}
+
+function Install-TailscaleClient {
+    <#
+    .SYNOPSIS
+        Downloads and silently installs the Tailscale Windows client.
+        Does NOT log in -- `tailscale up` opens a browser for your own
+        account, which is exactly what the tailscale-login gate walks you
+        through afterward. Never call this under -WhatIf.
+
+    .OUTPUTS
+        A status object with .Status in:
+          already-installed | needs-elevation | installed | failed
+        and a human-readable .Detail.
+    #>
+    [CmdletBinding()]
+    param(
+        [scriptblock]$ProcessRunner,
+        [scriptblock]$Downloader,
+        [scriptblock]$CommandChecker,
+        [scriptblock]$PathTester,
+        [scriptblock]$ElevationChecker,
+        [string]$InstallerUrl = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe',
+        [string]$DownloadPath
+    )
+    if (-not $ProcessRunner) { $ProcessRunner = Get-PrereqProcessRunner }
+    if (-not $Downloader) { $Downloader = Get-Downloader }
+    if (-not $CommandChecker) { $CommandChecker = Get-CommandChecker }
+    if (-not $PathTester) { $PathTester = Get-PathTester }
+    if (-not $DownloadPath) { $DownloadPath = Join-Path $env:TEMP 'tailscale-setup.exe' }
+
+    if (Test-TailscaleInstalled -CommandChecker $CommandChecker -PathTester $PathTester) {
+        return [pscustomobject]@{ Status = 'already-installed'; Detail = 'Tailscale is already installed.' }
+    }
+
+    if (-not (Test-IsElevated -ElevationChecker $ElevationChecker)) {
+        return [pscustomobject]@{ Status = 'needs-elevation'; Detail = 'Administrator privileges are required to install Tailscale.' }
+    }
+
+    & $Downloader -Url $InstallerUrl -Destination $DownloadPath
+
+    # NOTE: /quiet matches Tailscale's own documented unattended-install
+    # flag as of this writing. If a future installer version changes it,
+    # the failure path below still gives the user a working manual
+    # fallback rather than silently doing nothing.
+    $installResult = & $ProcessRunner -FilePath $DownloadPath -ArgumentList @('/quiet')
+    if ($installResult.ExitCode -ne 0) {
+        return [pscustomobject]@{ Status = 'failed'; Detail = "Tailscale installer exited with code $($installResult.ExitCode). Install it manually from https://tailscale.com/download/windows , then re-run install.ps1." }
+    }
+
+    # Same PATH-refresh reasoning as Docker Desktop's installer above.
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = @($machinePath, $userPath) -join ';'
+
+    if (Test-TailscaleInstalled -CommandChecker $CommandChecker -PathTester $PathTester) {
+        return [pscustomobject]@{ Status = 'installed'; Detail = 'Tailscale installed. You still need to log in yourself -- the next step walks you through that.' }
+    }
+    return [pscustomobject]@{ Status = 'failed'; Detail = "Tailscale's installer finished but the client isn't detected yet. It may just need a moment -- re-run install.ps1, or install manually from https://tailscale.com/download/windows if this persists." }
+}
+
 Export-ModuleMember -Function `
     Test-IsElevated, Test-DockerAvailable, Test-DockerInstalled, Start-DockerDesktopAndWait, `
     Test-WslReady, Install-WslPlatform, Install-DockerDesktop, `
+    Test-TailscaleInstalled, Install-TailscaleClient, `
     Get-PrereqProcessRunner, Set-PrereqProcessRunner, `
     Get-Downloader, Set-Downloader, `
     Get-CommandChecker, Set-CommandChecker, `

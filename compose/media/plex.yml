@@ -1,0 +1,29 @@
+# Uses bridge networking (joined to proxy-net) rather than host networking
+# so Caddy can reach it by container name like every other service in this
+# stack. Trade-off: local-network auto-discovery (GDM) won't work as well
+# as host networking would -- this is deliberate, matching the "everything
+# through Caddy/Tailscale" design. Switch to network_mode: host later if
+# LAN auto-discovery turns out to matter more than that consistency.
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - VERSION=docker
+    ports:
+      - "32400:32400"
+    volumes:
+      - ${FAST_ROOT}/appdata/plex:/config
+      - ${BULK_ROOT}/media/movies:/movies
+      - ${BULK_ROOT}/media/tv:/tv
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

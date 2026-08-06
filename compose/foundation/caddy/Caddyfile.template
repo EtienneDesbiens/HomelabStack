@@ -1,0 +1,91 @@
+# Starter Caddyfile for the homelab stack.
+#
+# install.ps1 copies this file to <fast>/appdata/caddy/Caddyfile on first
+# run (only if that file doesn't already exist yet -- it never overwrites
+# hand edits on a re-run). {$TAILNET_DOMAIN} is Caddy's own env var
+# substitution syntax; Deploy.psm1 passes TAILNET_DOMAIN through on every
+# compose deploy, sourced from config.json.
+#
+# Adding a new service later (per the "Ready for future projects" phase in
+# the implementation plan): copy one block below, change the subdomain and
+# the reverse_proxy target's container name + port, then run
+# `docker exec caddy caddy reload --config /etc/caddy/Caddyfile` -- no
+# restart needed.
+
+{
+	# Caddy's admin API defaults to binding loopback-only *inside* the
+	# container, which the host-published port 2019 can't reach. Bind it
+	# to all interfaces in-container so Validate.psm1's health check
+	# (GET http://localhost:2019/config/ from the host) can reach it --
+	# it's still only exposed on the container's own network, not the
+	# public internet.
+	admin 0.0.0.0:2019
+}
+
+dockge.{$TAILNET_DOMAIN} {
+	reverse_proxy dockge:5001
+}
+
+deluge.{$TAILNET_DOMAIN} {
+	reverse_proxy deluge:8112
+}
+
+prowlarr.{$TAILNET_DOMAIN} {
+	reverse_proxy prowlarr:9696
+}
+
+plex.{$TAILNET_DOMAIN} {
+	reverse_proxy plex:32400
+}
+
+sonarr.{$TAILNET_DOMAIN} {
+	reverse_proxy sonarr:8989
+}
+
+radarr.{$TAILNET_DOMAIN} {
+	reverse_proxy radarr:7878
+}
+
+bazarr.{$TAILNET_DOMAIN} {
+	reverse_proxy bazarr:6767
+}
+
+requests.{$TAILNET_DOMAIN} {
+	reverse_proxy overseerr:5055
+}
+
+audiobooks.{$TAILNET_DOMAIN} {
+	reverse_proxy audiobookshelf:13378
+}
+
+readarr.{$TAILNET_DOMAIN} {
+	reverse_proxy readarr-audiobook:8787
+}
+
+abrequest.{$TAILNET_DOMAIN} {
+	reverse_proxy audiobookrequest:8096
+}
+
+cloud.{$TAILNET_DOMAIN} {
+	reverse_proxy nextcloud:80
+}
+
+photos.{$TAILNET_DOMAIN} {
+	reverse_proxy immich-server:2283
+}
+
+vault.{$TAILNET_DOMAIN} {
+	reverse_proxy vaultwarden:80
+}
+
+adguard.{$TAILNET_DOMAIN} {
+	reverse_proxy adguardhome:3000
+}
+
+backup.{$TAILNET_DOMAIN} {
+	reverse_proxy duplicati:8200
+}
+
+uptime.{$TAILNET_DOMAIN} {
+	reverse_proxy uptime-kuma:3001
+}

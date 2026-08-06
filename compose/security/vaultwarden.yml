@@ -1,0 +1,18 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      - WEBSOCKET_ENABLED=true
+      - SIGNUPS_ALLOWED=false   # flip to true briefly for first-account creation, then back off
+    ports:
+      - "8222:80"
+    volumes:
+      - ${FAST_ROOT}/appdata/vaultwarden:/data
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

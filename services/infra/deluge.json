@@ -1,0 +1,19 @@
+{
+  "id": "deluge",
+  "name": "Deluge",
+  "group": "infra",
+  "phase": 2,
+  "compose": "compose/infra/deluge.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [8112],
+  "manualGates": [],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "deluge",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8112/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "deluge.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/deluge", "<bulk>/downloads"]
+  }
+}

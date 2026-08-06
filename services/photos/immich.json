@@ -1,0 +1,21 @@
+{
+  "id": "immich",
+  "name": "Immich",
+  "group": "photos",
+  "phase": 5,
+  "compose": "compose/photos/immich.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [2283],
+  "manualGates": [
+    { "name": "immich-mobile-backup" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "immich-server",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:2283/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "photos.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<bulk>/photos/immich"]
+  }
+}

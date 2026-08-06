@@ -1,0 +1,19 @@
+{
+  "id": "bazarr",
+  "name": "Bazarr",
+  "group": "media",
+  "phase": 3,
+  "compose": "compose/media/bazarr.yml",
+  "dependsOn": ["docker-network", "sonarr", "radarr"],
+  "ports": [6767],
+  "manualGates": [],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "bazarr",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:6767/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "bazarr.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/bazarr", "<bulk>/media/movies", "<bulk>/media/tv"]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "backup-tool",
+  "name": "Duplicati",
+  "group": "infra",
+  "phase": 7,
+  "compose": "compose/infra/backup-tool.yml",
+  "dependsOn": ["docker-network", "immich", "nextcloud", "vaultwarden"],
+  "ports": [8200],
+  "manualGates": [
+    { "name": "backup-dest", "envVar": "BACKUP_DEST_CONFIG" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "duplicati",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8200/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "backup.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/duplicati"]
+  }
+}

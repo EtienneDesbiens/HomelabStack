@@ -1,0 +1,27 @@
+{
+  "id": "sonarr",
+  "name": "Sonarr",
+  "group": "media",
+  "phase": 3,
+  "compose": "compose/media/sonarr.yml",
+  "dependsOn": ["docker-network", "deluge", "prowlarr"],
+  "ports": [8989],
+  "manualGates": [],
+  "apiKeySource": {
+    "type": "fileRead",
+    "path": "<fast>/appdata/sonarr/config.xml",
+    "xpath": "//Config/ApiKey"
+  },
+  "validate": {
+    "container": "sonarr",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8989/ping", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "sonarr.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "configChecks": [
+      { "type": "sonarrDownloadClient", "expects": "Deluge" },
+      { "type": "arrIndexerSource" }
+    ],
+    "volumePaths": ["<bulk>/media/tv", "<fast>/appdata/sonarr"]
+  }
+}

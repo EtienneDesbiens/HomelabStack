@@ -1,0 +1,19 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"   # admin API, used by Validate.psm1's health check
+    volumes:
+      - ${FAST_ROOT}/appdata/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ${FAST_ROOT}/appdata/caddy/data:/data
+      - ${FAST_ROOT}/appdata/caddy/config:/config
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

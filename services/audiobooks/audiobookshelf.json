@@ -1,0 +1,19 @@
+{
+  "id": "audiobookshelf",
+  "name": "Audiobookshelf",
+  "group": "audiobooks",
+  "phase": 4,
+  "compose": "compose/audiobooks/audiobookshelf.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [13378],
+  "manualGates": [],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "audiobookshelf",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:13378/healthcheck", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "audiobooks.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/audiobookshelf", "<bulk>/media/audiobooks"]
+  }
+}

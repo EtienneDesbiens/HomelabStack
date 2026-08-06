@@ -1,0 +1,21 @@
+{
+  "id": "nextcloud",
+  "name": "Nextcloud",
+  "group": "files",
+  "phase": 5,
+  "compose": "compose/files/nextcloud.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [8080],
+  "manualGates": [
+    { "name": "nextcloud-photos-off" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "nextcloud",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8080/status.php", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "cloud.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/nextcloud", "<bulk>/files/nextcloud"]
+  }
+}

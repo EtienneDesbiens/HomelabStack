@@ -1,0 +1,12 @@
+{
+  "id": "tailscale",
+  "name": "Tailscale",
+  "group": "foundation",
+  "phase": 0,
+  "deployType": "manual",
+  "dependsOn": [],
+  "ports": [],
+  "manualGates": [
+    { "name": "tailscale-login" }
+  ]
+}

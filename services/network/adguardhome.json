@@ -1,0 +1,21 @@
+{
+  "id": "adguardhome",
+  "name": "AdGuard Home",
+  "group": "network",
+  "phase": 6,
+  "compose": "compose/network/adguardhome.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [53, 3000],
+  "manualGates": [
+    { "name": "router-dns" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "adguardhome",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:3000/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "adguard.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/adguardhome"]
+  }
+}

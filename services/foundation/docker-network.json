@@ -1,0 +1,11 @@
+{
+  "id": "docker-network",
+  "name": "Shared Docker network (proxy-net)",
+  "group": "foundation",
+  "phase": 0,
+  "deployType": "dockerNetwork",
+  "network": "proxy-net",
+  "dependsOn": [],
+  "ports": [],
+  "manualGates": []
+}

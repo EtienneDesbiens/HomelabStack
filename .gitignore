@@ -1,0 +1,4 @@
+# Generated on first run by install.ps1 -- contains this machine's tier
+# root paths, tailnet domain, and manual-gate satisfaction state. Never
+# commit it; it's local install state, not part of the stack definition.
+config.json

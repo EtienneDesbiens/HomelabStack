@@ -1,0 +1,27 @@
+{
+  "id": "readarr-audiobook",
+  "name": "Readarr (audiobooks)",
+  "group": "audiobooks",
+  "phase": 4,
+  "compose": "compose/audiobooks/readarr-audiobook.yml",
+  "dependsOn": ["docker-network", "deluge", "prowlarr"],
+  "ports": [8787],
+  "manualGates": [],
+  "apiKeySource": {
+    "type": "fileRead",
+    "path": "<fast>/appdata/readarr-audiobook/config.xml",
+    "xpath": "//Config/ApiKey"
+  },
+  "validate": {
+    "container": "readarr-audiobook",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8787/ping", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "readarr.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "configChecks": [
+      { "type": "readarrDownloadClient", "expects": "Deluge" },
+      { "type": "readarrIndexerSource" }
+    ],
+    "volumePaths": ["<bulk>/media/audiobooks", "<fast>/appdata/readarr-audiobook"]
+  }
+}

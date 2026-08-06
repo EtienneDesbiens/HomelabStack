@@ -1,0 +1,21 @@
+{
+  "id": "plex",
+  "name": "Plex",
+  "group": "media",
+  "phase": 3,
+  "compose": "compose/media/plex.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [32400],
+  "manualGates": [
+    { "name": "plex-claim", "envVar": "PLEX_CLAIM" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "plex",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:32400/identity", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "plex.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/plex", "<bulk>/media/movies", "<bulk>/media/tv"]
+  }
+}

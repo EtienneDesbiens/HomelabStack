@@ -1,0 +1,27 @@
+{
+  "id": "radarr",
+  "name": "Radarr",
+  "group": "media",
+  "phase": 3,
+  "compose": "compose/media/radarr.yml",
+  "dependsOn": ["docker-network", "deluge", "prowlarr"],
+  "ports": [7878],
+  "manualGates": [],
+  "apiKeySource": {
+    "type": "fileRead",
+    "path": "<fast>/appdata/radarr/config.xml",
+    "xpath": "//Config/ApiKey"
+  },
+  "validate": {
+    "container": "radarr",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:7878/ping", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "radarr.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "configChecks": [
+      { "type": "radarrDownloadClient", "expects": "Deluge" },
+      { "type": "arrIndexerSource" }
+    ],
+    "volumePaths": ["<bulk>/media/movies", "<fast>/appdata/radarr"]
+  }
+}

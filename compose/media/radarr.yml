@@ -1,0 +1,21 @@
+services:
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    ports:
+      - "7878:7878"
+    volumes:
+      - ${FAST_ROOT}/appdata/radarr:/config
+      - ${BULK_ROOT}/media/movies:/movies
+      - ${BULK_ROOT}/downloads:/downloads
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

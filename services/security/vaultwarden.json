@@ -1,0 +1,21 @@
+{
+  "id": "vaultwarden",
+  "name": "Vaultwarden",
+  "group": "security",
+  "phase": 6,
+  "compose": "compose/security/vaultwarden.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [8222],
+  "manualGates": [
+    { "name": "vaultwarden-client" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "vaultwarden",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8222/alive", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "vault.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/vaultwarden"]
+  }
+}

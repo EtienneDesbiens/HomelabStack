@@ -1,0 +1,18 @@
+{
+  "id": "caddy",
+  "name": "Caddy",
+  "group": "foundation",
+  "phase": 0,
+  "compose": "compose/foundation/caddy.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [80, 443, 2019],
+  "manualGates": [],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "caddy",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:2019/config/", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/caddy"]
+  }
+}

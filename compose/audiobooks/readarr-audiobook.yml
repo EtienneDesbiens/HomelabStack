@@ -1,0 +1,25 @@
+# Readarr's audiobook profile has historically shipped on the "develop" tag
+# rather than "latest" -- verify this is still current when you first
+# deploy (check https://github.com/linuxserver/docker-readarr for the
+# recommended tag) and adjust if linuxserver has since stabilized it.
+services:
+  readarr-audiobook:
+    image: lscr.io/linuxserver/readarr:develop
+    container_name: readarr-audiobook
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    ports:
+      - "8787:8787"
+    volumes:
+      - ${FAST_ROOT}/appdata/readarr-audiobook:/config
+      - ${BULK_ROOT}/media/audiobooks:/audiobooks
+      - ${BULK_ROOT}/downloads:/downloads
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

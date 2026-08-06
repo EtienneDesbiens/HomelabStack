@@ -1,0 +1,28 @@
+{
+  "id": "prowlarr",
+  "name": "Prowlarr",
+  "group": "media",
+  "phase": 2,
+  "compose": "compose/media/prowlarr.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [9696],
+  "manualGates": [
+    { "name": "indexer-keys" }
+  ],
+  "apiKeySource": {
+    "type": "fileRead",
+    "path": "<fast>/appdata/prowlarr/config.xml",
+    "xpath": "//Config/ApiKey"
+  },
+  "validate": {
+    "container": "prowlarr",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:9696/ping", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "prowlarr.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "configChecks": [
+      { "type": "prowlarrIndexerCount" }
+    ],
+    "volumePaths": ["<fast>/appdata/prowlarr"]
+  }
+}

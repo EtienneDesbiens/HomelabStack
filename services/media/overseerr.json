@@ -1,0 +1,28 @@
+{
+  "id": "overseerr",
+  "name": "Overseerr",
+  "group": "media",
+  "phase": 3,
+  "compose": "compose/media/overseerr.yml",
+  "dependsOn": ["docker-network", "plex", "sonarr", "radarr"],
+  "ports": [5055],
+  "manualGates": [
+    { "name": "overseerr-setup" }
+  ],
+  "apiKeySource": {
+    "type": "fileRead",
+    "path": "<fast>/appdata/overseerr/settings.json",
+    "jsonPath": "main.apiKey"
+  },
+  "validate": {
+    "container": "overseerr",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:5055/api/v1/status", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "requests.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "configChecks": [
+      { "type": "overseerrPlexLink" }
+    ],
+    "volumePaths": ["<fast>/appdata/overseerr"]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "uptime-kuma",
+  "name": "Uptime Kuma",
+  "group": "infra",
+  "phase": 7,
+  "compose": "compose/infra/uptime-kuma.yml",
+  "dependsOn": ["docker-network", "caddy"],
+  "ports": [3001],
+  "manualGates": [
+    { "name": "uptime-monitors-configured" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "uptime-kuma",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:3001/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "uptime.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/uptime-kuma"]
+  }
+}

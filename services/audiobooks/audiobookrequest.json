@@ -1,0 +1,21 @@
+{
+  "id": "audiobookrequest",
+  "name": "AudiobookRequest",
+  "group": "audiobooks",
+  "phase": 4,
+  "compose": "compose/audiobooks/audiobookrequest.yml",
+  "dependsOn": ["docker-network", "readarr-audiobook"],
+  "ports": [8096],
+  "manualGates": [
+    { "name": "audiobookrequest-setup" }
+  ],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "audiobookrequest",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:8096/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "abrequest.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/audiobookrequest"]
+  }
+}

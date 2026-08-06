@@ -1,0 +1,38 @@
+services:
+  nextcloud-db:
+    image: mariadb:11
+    container_name: nextcloud-db
+    restart: unless-stopped
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    environment:
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=${NEXTCLOUD_DB_PASSWORD:-changeme_nextcloud_db}
+      - MYSQL_ROOT_PASSWORD=${NEXTCLOUD_DB_ROOT_PASSWORD:-changeme_nextcloud_root}
+    volumes:
+      - ${FAST_ROOT}/appdata/nextcloud/db:/var/lib/mysql
+    networks:
+      - proxy-net
+
+  nextcloud:
+    image: nextcloud:latest
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      - nextcloud-db
+    environment:
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=${NEXTCLOUD_DB_PASSWORD:-changeme_nextcloud_db}
+      - MYSQL_HOST=nextcloud-db
+    ports:
+      - "8080:80"
+    volumes:
+      - ${FAST_ROOT}/appdata/nextcloud/app:/var/www/html
+      - ${BULK_ROOT}/files/nextcloud:/var/www/html/data
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

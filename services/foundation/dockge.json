@@ -1,0 +1,19 @@
+{
+  "id": "dockge",
+  "name": "Dockge",
+  "group": "foundation",
+  "phase": 0,
+  "compose": "compose/foundation/dockge.yml",
+  "dependsOn": ["docker-network"],
+  "ports": [5001],
+  "manualGates": [],
+  "apiKeySource": { "type": "none" },
+  "validate": {
+    "container": "dockge",
+    "httpCheck": {
+      "direct": { "url": "http://localhost:5001/", "expectStatus": 200 },
+      "proxied": { "hostTemplate": "dockge.{tailnetDomain}", "expectStatus": 200 }
+    },
+    "volumePaths": ["<fast>/appdata/dockge", "<fast>/homelab/compose"]
+  }
+}

@@ -1,0 +1,22 @@
+services:
+  deluge:
+    image: lscr.io/linuxserver/deluge:latest
+    container_name: deluge
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    ports:
+      - "8112:8112"    # WebUI
+      - "6881:6881"    # torrent, TCP
+      - "6881:6881/udp"
+    volumes:
+      - ${FAST_ROOT}/appdata/deluge:/config
+      - ${BULK_ROOT}/downloads:/downloads
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

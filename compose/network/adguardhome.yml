@@ -1,0 +1,19 @@
+services:
+  adguardhome:
+    image: adguard/adguardhome:latest
+    container_name: adguardhome
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "3000:3000"   # first-run setup UI; AdGuard moves its real admin UI
+                       # to whatever port you choose during that setup
+    volumes:
+      - ${FAST_ROOT}/appdata/adguardhome/work:/opt/adguardhome/work
+      - ${FAST_ROOT}/appdata/adguardhome/conf:/opt/adguardhome/conf
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

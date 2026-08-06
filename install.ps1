@@ -1,0 +1,363 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Homelab installer wizard. Pick which services to install, deploy
+    exactly those (plus dependencies), and validate anything already
+    installed is actually configured correctly. Safe to re-run any time.
+
+.PARAMETER WhatIf
+    Dry-run mode: runs the full flow (manifest loading, dependency
+    resolution, pre-flight checks, ordering, per-service state checks) but
+    never calls real Docker -- Deploy.psm1 logs what it would have run
+    instead. Manual gates still prompt, since they don't touch Docker.
+
+.PARAMETER ConfigPath
+    Where to read/write config.json. Defaults to config.json next to this
+    script.
+
+.PARAMETER Select
+    Non-interactive: pass service ids directly instead of using the
+    checkbox UI (e.g. -Select sonarr,radarr). Mainly for scripted dry-runs
+    and testing; a real interactive session omits this.
+
+    See docs/superpowers/specs/2026-08-06-installer-wizard-design.md for
+    the design this script implements.
+#>
+[CmdletBinding()]
+param(
+    [switch]$WhatIf,
+    [string]$ConfigPath,
+    [string[]]$Select
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = $PSScriptRoot
+if (-not $ConfigPath) { $ConfigPath = Join-Path $repoRoot 'config.json' }
+
+Import-Module (Join-Path $repoRoot 'lib\Manifest.psm1') -Force
+Import-Module (Join-Path $repoRoot 'lib\Gate.psm1') -Force
+Import-Module (Join-Path $repoRoot 'lib\Deploy.psm1') -Force
+Import-Module (Join-Path $repoRoot 'lib\Validate.psm1') -Force
+Import-Module (Join-Path $repoRoot 'lib\Report.psm1') -Force
+
+# ---------------------------------------------------------------------------
+# config.json load / first-run prompt (Wizard flow step 1)
+# ---------------------------------------------------------------------------
+
+function Get-InstallConfig {
+    param([string]$Path)
+
+    if (Test-Path -Path $Path -PathType Leaf) {
+        $raw = Get-Content -Path $Path -Raw | ConvertFrom-Json
+        $gateState = @{}
+        if ($raw.PSObject.Properties.Match('manualGates').Count -gt 0) {
+            foreach ($prop in $raw.manualGates.PSObject.Properties) {
+                $gateState[$prop.Name] = @{ satisfied = [bool]$prop.Value.satisfied; satisfiedAt = [string]$prop.Value.satisfiedAt }
+            }
+        }
+        return @{
+            fastRoot      = [string]$raw.fastRoot
+            bulkRoot      = [string]$raw.bulkRoot
+            tailnetDomain = if ($raw.PSObject.Properties.Match('tailnetDomain').Count -gt 0) { [string]$raw.tailnetDomain } else { '' }
+            selections    = if ($raw.PSObject.Properties.Match('selections').Count -gt 0) { @($raw.selections | ForEach-Object { [string]$_ }) } else { @() }
+            manualGates   = $gateState
+        }
+    }
+
+    Write-Host "No config.json found -- first-run setup."
+    $fastRoot = Read-Host 'Fast tier root path (SSD: configs/appdata/databases), e.g. C:\homelab'
+    $bulkRoot = Read-Host 'Bulk tier root path (redundant volume: media/downloads/files), e.g. D:\'
+    $tailnetDomain = Read-Host 'Tailscale tailnet domain / MagicDNS suffix, e.g. my-tailnet.ts.net (blank is OK, set it later)'
+    return @{
+        fastRoot      = $fastRoot
+        bulkRoot      = $bulkRoot
+        tailnetDomain = $tailnetDomain
+        selections    = @()
+        manualGates   = @{}
+    }
+}
+
+function Save-InstallConfig {
+    param([hashtable]$Config, [string]$Path)
+    $gateObj = [ordered]@{}
+    foreach ($k in ($Config.manualGates.Keys | Sort-Object)) { $gateObj[$k] = $Config.manualGates[$k] }
+    $out = [ordered]@{
+        fastRoot      = $Config.fastRoot
+        bulkRoot      = $Config.bulkRoot
+        tailnetDomain = $Config.tailnetDomain
+        selections    = @($Config.selections)
+        manualGates   = $gateObj
+    }
+    ($out | ConvertTo-Json -Depth 8) | Set-Content -Path $Path -Encoding UTF8
+}
+
+# ---------------------------------------------------------------------------
+# Checkbox-style selection UI (Wizard flow step 3). Foundation services are
+# always-on and never shown as a checkbox.
+# ---------------------------------------------------------------------------
+
+function Show-ServiceCheckboxes {
+    param([System.Collections.IDictionary]$Manifests, [string[]]$PreSelected = @())
+
+    $selectable = @($Manifests.Values | Where-Object { $_.group -ne 'foundation' } | Sort-Object group, name)
+    $checked = [System.Collections.Generic.HashSet[string]]::new([string[]]$PreSelected)
+
+    $foundationNames = (@($Manifests.Values | Where-Object { $_.group -eq 'foundation' } | Sort-Object name) | ForEach-Object { $_.name }) -join ', '
+    Write-Host "`nFoundation services (always installed): $foundationNames"
+
+    while ($true) {
+        Write-Host "`nServices -- enter a number to toggle, 'a' for all, 'n' for none, 'd' when done:"
+        for ($i = 0; $i -lt $selectable.Count; $i++) {
+            $svc = $selectable[$i]
+            $mark = if ($checked.Contains($svc.id)) { 'x' } else { ' ' }
+            Write-Host ('{0,3}. [{1}] {2,-12} {3}' -f ($i + 1), $mark, $svc.group, $svc.name)
+        }
+        $response = Read-Host 'Selection'
+        if ($response -eq 'd') { break }
+        elseif ($response -eq 'a') { foreach ($svc in $selectable) { [void]$checked.Add($svc.id) } }
+        elseif ($response -eq 'n') { $checked.Clear() }
+        else {
+            $idx = 0
+            if ([int]::TryParse($response, [ref]$idx) -and $idx -ge 1 -and $idx -le $selectable.Count) {
+                $id = $selectable[$idx - 1].id
+                if ($checked.Contains($id)) { [void]$checked.Remove($id) } else { [void]$checked.Add($id) }
+            } else {
+                Write-Host "Not understood: '$response'"
+            }
+        }
+    }
+
+    return , @($checked)
+}
+
+# ---------------------------------------------------------------------------
+# Live re-check wiring for reverifiable acknowledgment gates. Only gates
+# marked Reverifiable in Gate.psm1's table need an entry here; the rest are
+# handled by Invoke-Gate with no verifier at all.
+# ---------------------------------------------------------------------------
+
+function Get-GateVerifier {
+    param([string]$GateName, $Manifest, [hashtable]$TierPaths)
+
+    switch ($GateName) {
+        'tailscale-login' {
+            return {
+                try { & tailscale status *> $null; return ($LASTEXITCODE -eq 0) }
+                catch { return $false }
+            }
+        }
+        'indexer-keys' {
+            return {
+                $keyResult = Resolve-ApiKey -Manifest $Manifest -TierPaths $TierPaths
+                if ($keyResult.Status -ne 'pass') { return $false }
+                $baseUrl = $Manifest.validate.httpCheck.direct.url -replace '/[^/]*$', ''
+                $check = Invoke-ConfigCheck -Check ([pscustomobject]@{ type = 'prowlarrIndexerCount' }) -ApiKey $keyResult.Key -HttpBaseUrl $baseUrl
+                return ($check.Status -eq 'pass')
+            }.GetNewClosure()
+        }
+        'overseerr-setup' {
+            return {
+                $keyResult = Resolve-ApiKey -Manifest $Manifest -TierPaths $TierPaths
+                if ($keyResult.Status -ne 'pass') { return $false }
+                $baseUrl = $Manifest.validate.httpCheck.direct.url -replace '/[^/]*$', ''
+                $check = Invoke-ConfigCheck -Check ([pscustomobject]@{ type = 'overseerrPlexLink' }) -ApiKey $keyResult.Key -HttpBaseUrl $baseUrl
+                return ($check.Status -eq 'pass')
+            }.GetNewClosure()
+        }
+        default { return $null }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# One-time host bootstrap: create appdata directories so Docker never has
+# to improvise a bind-mount target, and seed a starter Caddyfile if one
+# doesn't exist yet (never overwrites hand edits on a re-run). Skipped
+# entirely under -WhatIf -- it's real filesystem I/O, not a Docker call.
+# ---------------------------------------------------------------------------
+
+function Initialize-HostPaths {
+    param([System.Collections.IDictionary]$Manifests, [string[]]$SelectedIds, [hashtable]$TierPaths)
+
+    foreach ($id in $SelectedIds) {
+        $m = $Manifests[$id]
+        if ($m.deployType -ne 'compose') { continue }
+        $appdataDir = Join-Path $TierPaths.Fast "appdata\$id"
+        if (-not (Test-Path -Path $appdataDir)) {
+            New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+        }
+    }
+
+    if ($SelectedIds -contains 'caddy') {
+        $caddyfilePath = Join-Path $TierPaths.Fast 'appdata\caddy\Caddyfile'
+        if (-not (Test-Path -Path $caddyfilePath)) {
+            $template = Join-Path $repoRoot 'compose\foundation\caddy\Caddyfile.template'
+            Copy-Item -Path $template -Destination $caddyfilePath -Force
+            Write-Host "Seeded a starter Caddyfile at $caddyfilePath (edit it any time; re-runs never overwrite it)."
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Main flow
+# ---------------------------------------------------------------------------
+
+$config = Get-InstallConfig -Path $ConfigPath
+$tierPaths = @{ Fast = $config.fastRoot; Bulk = $config.bulkRoot; TailnetDomain = $config.tailnetDomain }
+
+# Step 2: load manifests, validate every manualGates reference up front.
+$manifests = Import-ServiceManifests -Root (Join-Path $repoRoot 'services')
+$allGateRefs = @()
+foreach ($id in $manifests.Keys) {
+    foreach ($g in @($manifests[$id].manualGates)) { $allGateRefs += $g.name }
+}
+if ($allGateRefs.Count -gt 0) { Test-GateReferencesExist -GateNames $allGateRefs }
+
+$foundationIds = @($manifests.Values | Where-Object { $_.group -eq 'foundation' } | ForEach-Object { $_.id })
+
+# Step 3: selection.
+$userSelectedIds = if ($Select) { @($Select) } else { Show-ServiceCheckboxes -Manifests $manifests -PreSelected $config.selections }
+
+# Step 4: dependency resolution.
+$initialSelection = @(@($userSelectedIds) + $foundationIds | Select-Object -Unique)
+$resolved = Resolve-ServiceSelection -Manifests $manifests -SelectedIds $initialSelection
+
+# Filter "Added X" messaging down to dependencies that actually still need
+# work -- one already installed and valid elsewhere shouldn't read as new
+# work about to happen (Wizard flow step 5, "deselected-but-installed").
+$autoAddedIds = @($resolved.AddedVia.Keys)
+$stillNeeded = [System.Collections.Generic.List[string]]::new()
+foreach ($depId in $autoAddedIds) {
+    $depManifest = $manifests[$depId]
+    if ($depManifest.deployType -eq 'compose') {
+        $state = Test-ServiceState -Manifest $depManifest -TierPaths $tierPaths -CaddyDeployed $false -TailnetDomain $config.tailnetDomain
+        if ($state.Status -ne 'already-valid') { $stillNeeded.Add($depId) }
+    } else {
+        $stillNeeded.Add($depId)
+    }
+}
+if ($stillNeeded.Count -gt 0) {
+    foreach ($group in (@($resolved.AddedVia.GetEnumerator() | Where-Object { $stillNeeded -contains $_.Key }) | Group-Object Value)) {
+        $depNames = (@($group.Group) | ForEach-Object { $manifests[$_.Key].name }) -join ', '
+        $viaName = $manifests[$group.Name].name
+        Write-Host "Added $depNames -- required by $viaName"
+    }
+}
+
+# Step 5: pre-flight port-collision check. Nothing is deployed until this passes.
+$collisions = Get-PortCollisions -Manifests $manifests -SelectedIds $resolved.SelectedIds
+if ($collisions.Count -gt 0) {
+    Write-Host "`nPort collisions detected -- fix these before anything is deployed:"
+    foreach ($c in $collisions) {
+        $names = (@($c.ServiceIds) | ForEach-Object { $manifests[$_].name }) -join ', '
+        Write-Host "  Port $($c.Port): $names"
+    }
+    exit 1
+}
+
+# Step 6: install order.
+$order = Get-InstallOrder -Manifests $manifests -SelectedIds $resolved.SelectedIds
+
+$config.selections = @($resolved.SelectedIds)
+Save-InstallConfig -Config $config -Path $ConfigPath
+
+if (-not $WhatIf) {
+    Initialize-HostPaths -Manifests $manifests -SelectedIds $resolved.SelectedIds -TierPaths $tierPaths
+}
+
+# Step 7: per-service deploy loop.
+$caddyDeployed = $false
+$results = [System.Collections.Generic.List[object]]::new()
+$gateResults = [System.Collections.Generic.List[object]]::new()
+
+foreach ($id in $order) {
+    $manifest = $manifests[$id]
+    Write-Host "`n=== $($manifest.name) ==="
+
+    if ($manifest.deployType -eq 'compose') {
+        # Runs even under -WhatIf: dry-run still checks real current state
+        # (per the design doc) so the planned action list is accurate about
+        # what would be skipped vs. deployed -- only the deploy itself
+        # becomes a no-op below, via Deploy-Service's own -WhatIf switch.
+        $preState = Test-ServiceState -Manifest $manifest -TierPaths $tierPaths -CaddyDeployed $caddyDeployed -TailnetDomain $config.tailnetDomain
+        if ($preState.Status -eq 'already-valid') {
+            Write-Host "Already valid -- skipping deploy. ($($preState.Detail))"
+            $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'already-valid'; Detail = $preState.Detail })
+            if ($id -eq 'caddy') { $caddyDeployed = $true }
+            continue
+        }
+    }
+
+    $addedBecauseOf = if ($resolved.AddedVia.ContainsKey($id)) { $manifests[$resolved.AddedVia[$id]].name } else { $null }
+    $envOverrides = @{}
+    $allGatesSatisfied = $true
+
+    foreach ($gateRef in @($manifest.manualGates)) {
+        $gateDef = Get-GateDefinition -Name $gateRef.name
+
+        if ($WhatIf) {
+            # Dry-run: never blocks on real input and never mutates persisted
+            # gate state -- just reports what would be asked, per the design
+            # doc's "reviewed and regression-tested ... without requiring
+            # Docker or real services".
+            $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $gateRef.name
+            Write-Host "  [$($gateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
+            $gateResults.Add([pscustomobject]@{
+                    GateName = $gateRef.name; ServiceName = $manifest.name
+                    Instructions = $gateDef.Instructions; Satisfied = $true
+                })
+            continue
+        }
+
+        $verifier = Get-GateVerifier -GateName $gateRef.name -Manifest $manifest -TierPaths $tierPaths
+        $gateResult = Invoke-Gate -Name $gateRef.name -GateState $config.manualGates -AddedBecauseOf $addedBecauseOf -VerifyScriptBlock $verifier
+        $gateResults.Add([pscustomobject]@{
+                GateName     = $gateRef.name
+                ServiceName  = $manifest.name
+                Instructions = $gateDef.Instructions
+                Satisfied    = $gateResult.Satisfied
+            })
+        $hasEnvVar = $gateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $gateRef.envVar
+        if ($gateResult.Satisfied -and $hasEnvVar -and $gateResult.Value) {
+            $envOverrides[$gateRef.envVar] = $gateResult.Value
+        }
+        if (-not $gateResult.Satisfied) { $allGatesSatisfied = $false }
+        Save-InstallConfig -Config $config -Path $ConfigPath
+    }
+
+    if ($manifest.deployType -eq 'manual') {
+        $status = if ($allGatesSatisfied) { 'installed' } else { 'needs-attention' }
+        $detail = if ($allGatesSatisfied) { 'manual setup confirmed' } else { 'manual setup still outstanding' }
+        $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = $status; Detail = $detail })
+        continue
+    }
+
+    $deployResult = Deploy-Service -Manifest $manifest -TierPaths $tierPaths -EnvOverrides $envOverrides -WhatIf:$WhatIf
+    Write-Host "  $($deployResult.Action)"
+
+    if ($WhatIf) {
+        $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'would-deploy'; Detail = $deployResult.Action })
+        continue
+    }
+
+    if ($deployResult.ExitCode -ne 0) {
+        $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'needs-attention'; Detail = "deploy failed: $($deployResult.Output -join ' ')" })
+        continue
+    }
+
+    if ($manifest.deployType -eq 'dockerNetwork') {
+        $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'installed'; Detail = $deployResult.Action })
+        continue
+    }
+
+    $postState = Test-ServiceState -Manifest $manifest -TierPaths $tierPaths -CaddyDeployed $caddyDeployed -TailnetDomain $config.tailnetDomain
+    $finalStatus = if ($postState.Status -eq 'already-valid') { 'installed' } else { 'needs-attention' }
+    $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = $finalStatus; Detail = $postState.Detail })
+
+    if ($id -eq 'caddy' -and $finalStatus -eq 'installed') { $caddyDeployed = $true }
+}
+
+# Step 8: report.
+Write-Host "`n"
+Write-Host (Format-InstallReport -Results $results -GateResults $gateResults)

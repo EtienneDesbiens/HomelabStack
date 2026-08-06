@@ -1,0 +1,27 @@
+# Duplicati is the concrete choice here (per homelab-implementation-plan.md);
+# Kopia/restic are documented alternatives for the same "backup tool" role
+# in the setup-agnostic plan if you'd rather switch.
+services:
+  duplicati:
+    image: duplicati/duplicati:latest
+    container_name: duplicati
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    ports:
+      - "8200:8200"
+    volumes:
+      - ${FAST_ROOT}/appdata/duplicati:/config
+      - ${FAST_ROOT}/appdata/immich/db:/source/immich-db:ro
+      - ${BULK_ROOT}/photos/immich:/source/immich-library:ro
+      - ${FAST_ROOT}/appdata/nextcloud:/source/nextcloud-app:ro
+      - ${BULK_ROOT}/files/nextcloud:/source/nextcloud-data:ro
+      - ${FAST_ROOT}/appdata/vaultwarden:/source/vaultwarden:ro
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

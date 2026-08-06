@@ -1,0 +1,24 @@
+# LOW CONFIDENCE: the exact published image name/tag for AudiobookRequest
+# was not independently verified while generating this stack (unlike the
+# other services here, which use well-established images). Confirm the
+# correct image on https://github.com/ (search "AudiobookRequest") before
+# first deploy and update this line -- everything else in this file
+# (ports, volumes, network) follows the same pattern as its siblings and
+# should carry over regardless of which image turns out to be right.
+services:
+  audiobookrequest:
+    image: ghcr.io/hollandtu/audiobookrequest:latest
+    container_name: audiobookrequest
+    restart: unless-stopped
+    environment:
+      - TZ=Etc/UTC
+    ports:
+      - "8096:8080"
+    volumes:
+      - ${FAST_ROOT}/appdata/audiobookrequest:/config
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true

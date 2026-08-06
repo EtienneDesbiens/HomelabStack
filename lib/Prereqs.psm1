@@ -184,7 +184,7 @@ function Start-DockerDesktopAndWait {
         }
         Start-Sleep -Seconds $PollIntervalSeconds
     }
-    return [pscustomobject]@{ Status = 'failed'; Detail = "Docker Desktop didn't respond within $StartupTimeoutSeconds seconds. It may still be starting (first launch can be slow) -- give it a minute and re-run install.ps1, or open Docker Desktop manually and check for errors there." }
+    return [pscustomobject]@{ Status = 'failed'; Detail = "Docker Desktop didn't respond within $StartupTimeoutSeconds seconds. Most often this is a first-launch prompt (sign-in, terms of service) sitting in the Docker Desktop window waiting for you -- it doesn't need a Docker Hub account for local use, so dismissing/skipping it is fine. Check the window, then re-run install.ps1 (safe to repeat; it picks up wherever it left off)." }
 }
 
 function Test-WslReady {

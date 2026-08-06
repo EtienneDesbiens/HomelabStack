@@ -92,6 +92,22 @@ Describe 'Install-TailscaleClient' {
     }
 }
 
+Describe 'Start-TailscaleLogin' {
+
+    It 'runs the injected launcher exactly once' {
+        $box = @{ callCount = 0 }
+        Start-TailscaleLogin -TailscaleUpLauncher { $box.callCount++ }.GetNewClosure()
+        $box.callCount | Should Be 1
+    }
+
+    It 'falls back to the default launcher when none is injected' {
+        $box = @{ ran = $false }
+        Set-TailscaleUpLauncher { $box.ran = $true }.GetNewClosure()
+        Start-TailscaleLogin
+        $box.ran | Should Be $true
+    }
+}
+
 Describe 'Test-DockerAvailable' {
 
     It 'is false when the docker command does not exist' {

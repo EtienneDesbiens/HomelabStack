@@ -41,7 +41,7 @@ $script:GateDefinitions = @{
         Name         = 'tailscale-login'
         Kind         = 'Acknowledgment'
         Reverifiable = $true
-        Instructions = 'Run "tailscale up" on this machine and complete the login flow in your browser.'
+        Instructions = 'Starting Tailscale login -- a browser window should open for you to finish it. If nothing opens within a few seconds, run "tailscale up" yourself in a terminal to get the login link.'
     }
     'router-dns'            = @{
         Name         = 'router-dns'

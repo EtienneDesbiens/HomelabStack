@@ -636,6 +636,14 @@ $workerScript = {
                 }
 
                 $verifier = Get-GuiGateVerifier -GateName $gateRef.name -Manifest $manifest -TierPaths $tierPaths
+
+                # Same reasoning as install.ps1: tailscale-login is the one
+                # gate the program can actually perform, not just describe.
+                if ($gateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
+                    Write-GuiLog '  Starting Tailscale login...'
+                    Start-TailscaleLogin
+                }
+
                 $readInput = { param($prompt) Show-GatePromptDialog -Prompt $prompt -Sensitive $false }.GetNewClosure()
                 $readSecure = { param($prompt) ConvertTo-SecureStringFromPlainText (Show-GatePromptDialog -Prompt $prompt -Sensitive $true) }.GetNewClosure()
                 $writeOut = { param($text) Write-GuiLog $text }.GetNewClosure()

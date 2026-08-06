@@ -409,6 +409,18 @@ foreach ($id in $order) {
         }
 
         $verifier = Get-GateVerifier -GateName $gateRef.name -Manifest $manifest -TierPaths $tierPaths
+
+        # tailscale-login is the one gate the program can actually perform
+        # itself rather than just describe: run `tailscale up` in the
+        # background before prompting, so the user only has to complete
+        # the browser login, not type the command too. Checked against the
+        # verifier first (not just "is it marked satisfied in config")
+        # so this also covers "was logged in before, isn't anymore".
+        if ($gateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
+            Write-Host '  Starting Tailscale login...'
+            Start-TailscaleLogin
+        }
+
         $gateResult = Invoke-Gate -Name $gateRef.name -GateState $config.manualGates -AddedBecauseOf $addedBecauseOf -VerifyScriptBlock $verifier
         $gateResults.Add([pscustomobject]@{
                 GateName     = $gateRef.name

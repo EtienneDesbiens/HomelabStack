@@ -405,15 +405,43 @@ function Install-TailscaleClient {
     $env:Path = @($machinePath, $userPath) -join ';'
 
     if (Test-TailscaleInstalled -CommandChecker $CommandChecker -PathTester $PathTester) {
-        return [pscustomobject]@{ Status = 'installed'; Detail = 'Tailscale installed. You still need to log in yourself -- the next step walks you through that.' }
+        return [pscustomobject]@{ Status = 'installed'; Detail = 'Tailscale installed. The next step logs in automatically (opens a browser).' }
     }
     return [pscustomobject]@{ Status = 'failed'; Detail = "Tailscale's installer finished but the client isn't detected yet. It may just need a moment -- re-run install.ps1, or install manually from https://tailscale.com/download/windows if this persists." }
+}
+
+$script:TailscaleUpLauncher = {
+    Start-Process -FilePath 'tailscale' -ArgumentList 'up' -WindowStyle Hidden
+}
+function Get-TailscaleUpLauncher { $script:TailscaleUpLauncher }
+function Set-TailscaleUpLauncher {
+    param([Parameter(Mandatory)][scriptblock]$Launcher)
+    $script:TailscaleUpLauncher = $Launcher
+}
+
+function Start-TailscaleLogin {
+    <#
+    .SYNOPSIS
+        Runs `tailscale up` in the background so the program drives login
+        itself instead of asking the user to type the command. Tailscale's
+        client opens the default browser for the auth flow on its own --
+        this just kicks that off; it does not wait for login to finish.
+        Callers should poll `tailscale status` separately to know when
+        login actually completes -- the tailscale-login gate's
+        VerifyScriptBlock (in install.ps1/install-gui.ps1) already does
+        exactly that, so calling this once before invoking that gate is
+        the whole integration.
+    #>
+    [CmdletBinding()]
+    param([scriptblock]$TailscaleUpLauncher)
+    if (-not $TailscaleUpLauncher) { $TailscaleUpLauncher = Get-TailscaleUpLauncher }
+    & $TailscaleUpLauncher
 }
 
 Export-ModuleMember -Function `
     Test-IsElevated, Test-DockerAvailable, Test-DockerInstalled, Start-DockerDesktopAndWait, `
     Test-WslReady, Install-WslPlatform, Install-DockerDesktop, `
-    Test-TailscaleInstalled, Install-TailscaleClient, `
+    Test-TailscaleInstalled, Install-TailscaleClient, Start-TailscaleLogin, `
     Get-PrereqProcessRunner, Set-PrereqProcessRunner, `
     Get-Downloader, Set-Downloader, `
     Get-CommandChecker, Set-CommandChecker, `
@@ -421,4 +449,5 @@ Export-ModuleMember -Function `
     Get-ElevationChecker, Set-ElevationChecker, `
     Get-WslRunner, Set-WslRunner, `
     Get-PathTester, Set-PathTester, `
-    Get-AppLauncher, Set-AppLauncher
+    Get-AppLauncher, Set-AppLauncher, `
+    Get-TailscaleUpLauncher, Set-TailscaleUpLauncher

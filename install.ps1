@@ -71,6 +71,7 @@ if (-not $WhatIf -and -not $SkipDockerInstall) {
             } else {
                 Write-Host "`nDocker not found -- installing Docker Desktop. This can take several minutes on a slow connection."
             }
+            Write-Host "If a sign-in or setup dialog pops up in the Docker Desktop window, dismiss/skip it -- no Docker Hub account is needed for local use, and this script is waiting on the engine, not on that dialog."
             $dockerInstall = Install-DockerDesktop
             Write-Host "  $($dockerInstall.Detail)"
 

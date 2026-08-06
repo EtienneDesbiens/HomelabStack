@@ -54,6 +54,35 @@ Describe 'Import-ServiceManifests' {
         $m['caddy'].deployType | Should Be 'compose'
     }
 
+    It 'leaves compose paths relative when -RepoRoot is not given' {
+        New-Fixture -Id 'caddy' -Group 'foundation' -Phase 0
+        $m = Import-ServiceManifests -Root (Join-Path $TestDrive 'services')
+        $m['caddy'].compose | Should Be 'compose/foundation/caddy.yml'
+    }
+
+    It 'resolves compose paths to absolute under -RepoRoot' {
+        # Regression test: Deploy.psm1 hands manifest.compose straight to
+        # `docker compose -f <path>`, which resolves a relative path
+        # against the *process's* current working directory, not the
+        # repo. An elevated self-relaunch (Start-Process -Verb RunAs)
+        # doesn't reliably inherit CWD -- it commonly starts in the user's
+        # home directory instead -- which broke every compose deploy with
+        # "the system cannot find the path" until -RepoRoot was added.
+        New-Fixture -Id 'caddy' -Group 'foundation' -Phase 0
+        $repoRoot = 'C:\some\repo\root'
+        $m = Import-ServiceManifests -Root (Join-Path $TestDrive 'services') -RepoRoot $repoRoot
+        $m['caddy'].compose | Should Be (Join-Path $repoRoot 'compose/foundation/caddy.yml')
+        [System.IO.Path]::IsPathRooted($m['caddy'].compose) | Should Be $true
+    }
+
+    It 'does not touch compose paths for non-compose deployTypes even with -RepoRoot' {
+        $dir = Join-Path $TestDrive 'noncompose'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        '{"id":"docker-network","name":"Docker Network","group":"foundation","deployType":"dockerNetwork"}' | Set-Content (Join-Path $dir 'docker-network.json')
+        $m = Import-ServiceManifests -Root $dir -RepoRoot 'C:\some\repo\root'
+        (Get-Member -InputObject $m['docker-network'] -Name compose -MemberType NoteProperty) | Should Be $null
+    }
+
     It 'throws on duplicate service id' {
         $dir1 = Join-Path $TestDrive 'dup\a'
         $dir2 = Join-Path $TestDrive 'dup\b'

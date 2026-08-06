@@ -64,7 +64,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     if ($ConfigPath) { $relaunch.AddRange([string[]]@('-ConfigPath', "`"$ConfigPath`"")) }
     if ($SkipDockerInstall) { $relaunch.Add('-SkipDockerInstall') }
     if ($SkipTailscaleInstall) { $relaunch.Add('-SkipTailscaleInstall') }
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunch | Out-Null
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunch -WorkingDirectory $PSScriptRoot | Out-Null
     exit
 }
 
@@ -489,7 +489,12 @@ $workerScript = {
                 $relaunchArgs.AddRange([string[]]@('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$($syncHash.ScriptPath)`"", '-ConfigPath', "`"$($syncHash.ConfigPath)`""))
                 if ($syncHash.SkipDockerInstall) { $relaunchArgs.Add('-SkipDockerInstall') }
                 if ($syncHash.SkipTailscaleInstall) { $relaunchArgs.Add('-SkipTailscaleInstall') }
-                $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
+                # See install.ps1's matching comment: an elevated relaunch
+                # doesn't reliably inherit this process's CWD, which broke
+                # every compose-relative path before Import-ServiceManifests
+                # got a -RepoRoot to resolve them absolutely. Cheap insurance
+                # against the same class of bug elsewhere.
+                $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru -WorkingDirectory $syncHash.RepoRoot
                 Write-GuiLog "Elevated instance finished (exit code $($proc.ExitCode)). Closing this window."
                 $syncHash.Done = $true
                 $syncHash.Window.Invoke([Action]{ $syncHash.Window.Close() }) | Out-Null
@@ -534,7 +539,7 @@ $workerScript = {
         $tierPaths = @{ Fast = $config.fastRoot; Bulk = $config.bulkRoot; TailnetDomain = $config.tailnetDomain }
 
         # --- Step 2: manifests.
-        $manifests = Import-ServiceManifests -Root (Join-Path $syncHash.RepoRoot 'services')
+        $manifests = Import-ServiceManifests -Root (Join-Path $syncHash.RepoRoot 'services') -RepoRoot $syncHash.RepoRoot
         $allGateRefs = @()
         foreach ($id in $manifests.Keys) { foreach ($g in @($manifests[$id].manualGates)) { $allGateRefs += $g.name } }
         if ($allGateRefs.Count -gt 0) { Test-GateReferencesExist -GateNames $allGateRefs }

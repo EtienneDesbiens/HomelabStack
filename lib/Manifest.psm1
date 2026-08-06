@@ -60,10 +60,29 @@ function Import-ServiceManifests {
         Recursively loads every services/**/<id>.json under -Root, validates
         each against the schema, normalizes optional fields, and returns an
         ordered id -> manifest map.
+
+    .PARAMETER RepoRoot
+        When given, each compose-deployed manifest's .compose path (stored
+        as a repo-relative string like "compose/foundation/caddy.yml") is
+        resolved to an absolute path under this root. Without it, .compose
+        stays exactly as written in the JSON.
+
+        This matters because Deploy.psm1 hands that string straight to
+        `docker compose -f <path>`, which resolves a relative path against
+        the *process's current working directory* -- not against this
+        repo. That CWD is not reliably the repo root: an elevated
+        self-relaunch (Start-Process -Verb RunAs) commonly starts in the
+        user's home directory rather than inheriting the launching
+        process's CWD, and -WhatIf mode never surfaces the problem since
+        it builds a descriptive string without ever actually invoking
+        docker with the path. Resolving once here, at load time, makes
+        every consumer correct regardless of how the entry script was
+        launched, rather than relying on CWD being right by accident.
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Root
+        [Parameter(Mandatory)][string]$Root,
+        [string]$RepoRoot
     )
 
     if (-not (Test-Path -Path $Root -PathType Container)) {
@@ -98,6 +117,11 @@ function Import-ServiceManifests {
         }
         if (-not (Get-Member -InputObject $obj -Name deployType -MemberType NoteProperty)) {
             $obj | Add-Member -NotePropertyName deployType -NotePropertyValue 'compose'
+        }
+        if ($RepoRoot -and $obj.deployType -eq 'compose' -and
+            (Get-Member -InputObject $obj -Name compose -MemberType NoteProperty) -and
+            -not [System.IO.Path]::IsPathRooted($obj.compose)) {
+            $obj.compose = Join-Path $RepoRoot $obj.compose
         }
         $obj | Add-Member -NotePropertyName _sourcePath -NotePropertyValue $file.FullName -Force
 

@@ -104,7 +104,15 @@ if ($WhatIf) {
             if ($Select) { $relaunchArgs.AddRange([string[]]@('-Select', "`"$($Select -join ',')`"")) }
             if ($SkipDockerInstall) { $relaunchArgs.Add('-SkipDockerInstall') }
             if ($SkipTailscaleInstall) { $relaunchArgs.Add('-SkipTailscaleInstall') }
-            $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
+            # -WorkingDirectory matters: an elevated relaunch doesn't
+            # reliably inherit this process's CWD (it commonly starts in
+            # the user's home directory instead), which broke every
+            # compose-relative path if anything downstream ever assumed
+            # CWD == repo root. Import-ServiceManifests's -RepoRoot now
+            # makes compose paths absolute regardless, but setting this
+            # explicitly too is cheap insurance against the same class of
+            # bug elsewhere.
+            $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru -WorkingDirectory $repoRoot
             exit $proc.ExitCode
         }
 
@@ -305,7 +313,7 @@ $config = Get-InstallConfig -Path $ConfigPath
 $tierPaths = @{ Fast = $config.fastRoot; Bulk = $config.bulkRoot; TailnetDomain = $config.tailnetDomain }
 
 # Step 2: load manifests, validate every manualGates reference up front.
-$manifests = Import-ServiceManifests -Root (Join-Path $repoRoot 'services')
+$manifests = Import-ServiceManifests -Root (Join-Path $repoRoot 'services') -RepoRoot $repoRoot
 $allGateRefs = @()
 foreach ($id in $manifests.Keys) {
     foreach ($g in @($manifests[$id].manualGates)) { $allGateRefs += $g.name }

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Homelab Setup Overview</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --border:         rgba(11,11,11,0.10);
+
+    --series-1: #2a78d6; /* media */
+    --series-2: #eb6834; /* files */
+    --series-3: #1baf7a; /* photos */
+    --series-4: #4a3aa7; /* security */
+    --series-5: #eda100; /* network */
+    --series-6: #e87ba4; /* audiobooks */
+    --series-7: #008300; /* shared infrastructure */
+    --series-8: #e34948; /* your apps */
+
+    --hw-fill: #f0efec; /* neutral diverging midpoint, used as hardware neutral */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --border:         rgba(255,255,255,0.10);
+
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --series-4: #9085e9;
+      --series-5: #c98500;
+      --series-6: #d55181;
+      --series-7: #008300;
+      --series-8: #e66767;
+
+      --hw-fill: #232320;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --border:         rgba(255,255,255,0.10);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #9085e9;
+    --series-5: #c98500;
+    --series-6: #d55181;
+    --series-7: #008300;
+    --series-8: #e66767;
+
+    --hw-fill: #232320;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text-primary);
+  }
+  .viz-root { padding: 32px 24px 64px; max-width: 1080px; margin: 0 auto; }
+
+  .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 32px; }
+
+  .theme-toggle {
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .layer-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 10px;
+  }
+
+  .layer { margin-bottom: 28px; }
+
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .box {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    flex: 1 1 140px;
+  }
+  .box-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .box-desc { font-size: 12px; color: var(--text-secondary); margin: 0; line-height: 1.4; }
+
+  .hardware .box { background: var(--hw-fill); flex-basis: 200px; }
+
+  .connector {
+    display: flex;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 18px;
+    margin: 4px 0;
+    line-height: 1;
+  }
+
+  .service-groups { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  @media (max-width: 620px) { .service-groups { grid-template-columns: 1fr; } }
+
+  .group {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-1);
+    overflow: hidden;
+  }
+  .group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .group-head h3 { font-size: 13px; margin: 0; }
+  .group-head span { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+  .group-body { padding: 10px 14px 14px; }
+  .svc { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--grid); }
+  .svc:last-child { border-bottom: none; }
+  .svc-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .svc-desc { font-size: 12px; color: var(--text-secondary); text-align: right; }
+
+  .remote {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 24px;
+  }
+  .remote .box-title { margin: 0; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="viz-root">
+
+  <div class="header">
+    <div>
+      <h1>Homelab Setup</h1>
+      <p class="subtitle">Dedicated Windows server &mdash; hardware, storage redundancy, and the self-hosted services running on top</p>
+    </div>
+    <button class="theme-toggle" id="themeToggle">Toggle dark mode</button>
+  </div>
+
+  <div class="layer hardware">
+    <p class="layer-label">Hardware</p>
+    <div class="row">
+      <div class="box"><p class="box-title">PC (dedicated server)</p><p class="box-desc">Always-on, Windows, 64GB RAM</p></div>
+      <div class="box"><p class="box-title">1TB SSD</p><p class="box-desc">Boot drive + app configs / databases</p></div>
+      <div class="box"><p class="box-title">14TB HDD + 14TB HDD</p><p class="box-desc">Mirrored via Storage Spaces (RAID1-equivalent) &mdash; survives one drive failure</p></div>
+    </div>
+  </div>
+
+  <div class="connector">&#8595;</div>
+
+  <div class="layer">
+    <p class="layer-label">Platform</p>
+    <div class="row">
+      <div class="box"><p class="box-title">Windows</p><p class="box-desc">Host OS, auto-login, updates scheduled off-hours</p></div>
+      <div class="box"><p class="box-title">Docker Engine / Compose</p><p class="box-desc">Runs each service below as a container</p></div>
+      <div class="box"><p class="box-title">Dockge</p><p class="box-desc">Web UI to manage all Compose stacks</p></div>
+      <div class="box"><p class="box-title">Caddy</p><p class="box-desc">Reverse proxy &mdash; clean URLs + HTTPS for every app, easy to extend for your own dev projects</p></div>
+    </div>
+  </div>
+
+  <div class="connector">&#8595;</div>
+
+  <div class="layer">
+    <p class="layer-label">Services</p>
+    <div class="service-groups">
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-1)"></span><h3>Media streaming</h3><span>replaces Netflix-style subs</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Plex (Pro)</span><span class="svc-desc">Streams your library, HW transcoding</span></div>
+          <div class="svc"><span class="svc-name">Sonarr / Radarr</span><span class="svc-desc">Auto-organizes shows &amp; movies</span></div>
+          <div class="svc"><span class="svc-name">Prowlarr</span><span class="svc-desc">Indexer management</span></div>
+          <div class="svc"><span class="svc-name">Bazarr</span><span class="svc-desc">Subtitles</span></div>
+          <div class="svc"><span class="svc-name">Overseerr</span><span class="svc-desc">Remote requests &mdash; search &amp; request, sends to Sonarr/Radarr</span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-6)"></span><h3>Audiobooks</h3><span>replaces Audible</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Audiobookshelf</span><span class="svc-desc">Library server &amp; player &mdash; progress sync, bookmarks, sleep timer, mobile app</span></div>
+          <div class="svc"><span class="svc-name">Readarr (audiobook)</span><span class="svc-desc">Monitors &amp; auto-downloads, feeds Audiobookshelf library</span></div>
+          <div class="svc"><span class="svc-name">AudiobookRequest</span><span class="svc-desc">Remote requests &mdash; search &amp; request, sends to Readarr</span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-2)"></span><h3>Remote drive</h3><span>replaces Google Drive / Dropbox</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Nextcloud</span><span class="svc-desc">Files, sync, mobile app access &mdash; photo module disabled, Immich owns photos</span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-3)"></span><h3>Photo backup</h3><span>replaces Google Photos</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Immich</span><span class="svc-desc">Auto-backup from phone, albums, search</span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-4)"></span><h3>Security</h3><span>replaces Bitwarden/1Password subs</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Vaultwarden</span><span class="svc-desc">Password manager, Bitwarden-compatible apps</span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="swatch" style="background:var(--series-5)"></span><h3>Network</h3><span>ad blocking, smart home</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">AdGuard Home</span><span class="svc-desc">Network-wide ad &amp; tracker blocking</span></div>
+          <div class="svc"><span class="svc-name">Home Assistant</span><span class="svc-desc">Smart home hub (optional add-on)</span></div>
+        </div>
+      </div>
+
+      <div class="group" style="grid-column: 1 / -1;">
+        <div class="group-head"><span class="swatch" style="background:var(--series-7)"></span><h3>Shared infrastructure</h3><span>used by the groups above</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">Deluge</span><span class="svc-desc">Single shared download client for Sonarr/Radarr/Readarr</span></div>
+          <div class="svc"><span class="svc-name">Duplicati / Kopia</span><span class="svc-desc">Backs up Immich, Nextcloud &amp; Vaultwarden data off-box &mdash; RAID mirror alone won't cover deletion/ransomware</span></div>
+          <div class="svc"><span class="svc-name">Uptime Kuma</span><span class="svc-desc">Monitors all services, alerts if one goes down</span></div>
+        </div>
+      </div>
+
+      <div class="group" style="grid-column: 1 / -1;">
+        <div class="group-head"><span class="swatch" style="background:var(--series-8)"></span><h3>Your apps</h3><span>added as you build them</span></div>
+        <div class="group-body">
+          <div class="svc"><span class="svc-name">(future app)</span><span class="svc-desc">Containerize, add to Compose, add 3 lines to Caddyfile</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="remote">
+    <div class="swatch" style="background:var(--text-muted); width:14px; height:14px;"></div>
+    <div>
+      <p class="box-title">Tailscale</p>
+      <p class="box-desc">Secure private network to every service above from your phone, laptop, or TV &mdash; no port forwarding. Plex Pass also has its own remote-access relay for streaming specifically.</p>
+    </div>
+  </div>
+
+</div>
+<script>
+  document.getElementById('themeToggle').addEventListener('click', function() {
+    var root = document.documentElement;
+    var current = root.getAttribute('data-theme');
+    root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  });
+</script>
+</body>
+</html>

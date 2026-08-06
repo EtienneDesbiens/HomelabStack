@@ -20,6 +20,12 @@
     checkbox UI (e.g. -Select sonarr,radarr). Mainly for scripted dry-runs
     and testing; a real interactive session omits this.
 
+.PARAMETER SkipDockerInstall
+    Skip the Docker Desktop bootstrap entirely, even if Docker isn't
+    available. For environments where you're deliberately managing Docker
+    yourself, or where the auto-install path (Windows-only, needs
+    elevation) doesn't apply.
+
     See docs/superpowers/specs/2026-08-06-installer-wizard-design.md for
     the design this script implements.
 #>
@@ -27,7 +33,8 @@
 param(
     [switch]$WhatIf,
     [string]$ConfigPath,
-    [string[]]$Select
+    [string[]]$Select,
+    [switch]$SkipDockerInstall
 )
 
 Set-StrictMode -Version Latest
@@ -36,11 +43,54 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
 if (-not $ConfigPath) { $ConfigPath = Join-Path $repoRoot 'config.json' }
 
+Import-Module (Join-Path $repoRoot 'lib\Prereqs.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Manifest.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Gate.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Deploy.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Validate.psm1') -Force
 Import-Module (Join-Path $repoRoot 'lib\Report.psm1') -Force
+
+# ---------------------------------------------------------------------------
+# Docker bootstrap (Wizard flow step 0, added on top of the original design
+# so this repo is a "clone it and run it" experience with nothing to
+# install first). Skipped entirely under -WhatIf or -SkipDockerInstall --
+# it's real system state (Windows features, an elevated installer run),
+# not something a dry run should ever touch.
+# ---------------------------------------------------------------------------
+
+if (-not $WhatIf -and -not $SkipDockerInstall) {
+    if (-not (Test-DockerAvailable)) {
+        if (-not (Test-IsElevated)) {
+            Write-Host "Docker wasn't found. Relaunching elevated to install Docker Desktop -- approve the Administrator prompt that's about to appear."
+            # Elements are individually quoted -- Start-Process's -ArgumentList
+            # joins the array with spaces but does not auto-quote elements
+            # itself, so an install path containing spaces would otherwise
+            # split into multiple arguments.
+            $relaunchArgs = [System.Collections.Generic.List[string]]::new()
+            $relaunchArgs.AddRange([string[]]@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-ConfigPath', "`"$ConfigPath`""))
+            if ($Select) { $relaunchArgs.AddRange([string[]]@('-Select', "`"$($Select -join ',')`"")) }
+            $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
+            exit $proc.ExitCode
+        }
+
+        Write-Host "`nDocker not found -- installing Docker Desktop. This can take several minutes on a slow connection."
+        $dockerInstall = Install-DockerDesktop
+        Write-Host "  $($dockerInstall.Detail)"
+
+        if ($dockerInstall.Status -eq 'reboot-required') {
+            Write-Host "`nReboot this machine, then run install.ps1 again -- it picks up right where it left off (config.json and everything already deployed is untouched)."
+            exit 0
+        }
+        if ($dockerInstall.Status -in @('failed', 'needs-elevation')) {
+            Write-Host "`nCouldn't finish installing Docker automatically. Install Docker Desktop manually from https://www.docker.com/products/docker-desktop/ , then re-run install.ps1 (or pass -SkipDockerInstall if you're managing it yourself)."
+            exit 1
+        }
+    }
+} elseif ($WhatIf -and -not $SkipDockerInstall) {
+    if (-not (Test-DockerAvailable)) {
+        Write-Host "`n[docker] would install Docker Desktop (not currently available; real install is skipped under -WhatIf)."
+    }
+}
 
 # ---------------------------------------------------------------------------
 # config.json load / first-run prompt (Wizard flow step 1)

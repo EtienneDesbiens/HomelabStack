@@ -303,3 +303,32 @@ satisfied.
   implementation plans.
 - Uninstalling/removing a service — the wizard is additive only; removal
   is a manual `docker compose down` for now.
+
+## Addendum (implementation pass): Docker Desktop bootstrap
+
+Added after the initial design, so `install.ps1` is a true "clone the repo
+and run it" experience with nothing to install first:
+
+- **`lib/Prereqs.psm1`** runs as step 0, before manifest loading. It checks
+  `Test-DockerAvailable` (the `docker` CLI exists *and* the daemon
+  responds — Desktop can be installed but not started). If unavailable:
+  - Not elevated → relaunches the whole script elevated (`Start-Process
+    -Verb RunAs -Wait`) and exits with the elevated process's exit code.
+  - Elevated but WSL2's two Windows optional features aren't both enabled
+    → enables them and exits with reboot instructions. Re-running
+    `install.ps1` after the reboot resumes cleanly, same as any other
+    idempotent step in this design.
+  - Elevated and WSL2-ready → downloads Docker Desktop's installer and
+    runs it silently (`install --quiet --accept-license --backend=wsl-2`),
+    then polls until the daemon responds (Desktop's first launch is slow).
+- Every external touchpoint (process launch, download, elevation check,
+  Windows feature query/enable, docker CLI) is an injectable scriptblock,
+  same pattern as `Deploy.psm1`/`Validate.psm1`, so the branching logic is
+  Pester-tested without ever running a real installer, touching Windows
+  features, or needing real elevation.
+- Skipped entirely under `-WhatIf` (just logs whether it would install) or
+  the new `-SkipDockerInstall` switch, for anyone managing Docker
+  themselves or running outside Windows/Desktop's auto-install path.
+- Windows-only, matching the rest of this design's platform scope. Backend
+  is hardcoded to WSL2 (not Hyper-V) since the target machine is Windows
+  11 **Home**, which can't run Hyper-V.

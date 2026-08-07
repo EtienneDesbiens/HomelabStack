@@ -447,6 +447,50 @@ $workerScript = {
         }
     }
 
+    function Invoke-GuiServiceGate {
+        <#
+        Duplicated from install.ps1's Invoke-ServiceGate, with GUI-backed
+        I/O. Reads $config from the enclosing worker scope; -EnvOverrides
+        is a hashtable mutated in place (reference type), since the
+        caller needs the collected value for the Deploy-Service call that
+        follows.
+        #>
+        param($GateRef, $Manifest, [string]$AddedBecauseOf, [hashtable]$EnvOverrides, [System.Collections.Generic.List[object]]$GateResults)
+
+        $gateDef = Get-GateDefinition -Name $GateRef.name
+
+        if ($whatIf) {
+            # Handled here (not by the caller) so every call site --
+            # immediate or deferred-until-after-deploy -- gets correct
+            # dry-run behavior for free, and the preview's log order
+            # actually matches what a real run would do.
+            $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $GateRef.name
+            Write-GuiLog "  [$($GateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
+            $GateResults.Add([pscustomobject]@{ GateName = $GateRef.name; ServiceName = $Manifest.name; Instructions = $gateDef.Instructions; Satisfied = $true })
+            return $true
+        }
+
+        $verifier = Get-GuiGateVerifier -GateName $GateRef.name -Manifest $Manifest -TierPaths $tierPaths
+
+        if ($GateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
+            Write-GuiLog '  Starting Tailscale login...'
+            Start-TailscaleLogin
+        }
+
+        $readInput = { param($prompt) Show-GatePromptDialog -Prompt $prompt -Sensitive $false }.GetNewClosure()
+        $readSecure = { param($prompt) ConvertTo-SecureStringFromPlainText (Show-GatePromptDialog -Prompt $prompt -Sensitive $true) }.GetNewClosure()
+        $writeOut = { param($text) Write-GuiLog $text }.GetNewClosure()
+
+        $gateResult = Invoke-Gate -Name $GateRef.name -GateState $config.manualGates -AddedBecauseOf $AddedBecauseOf `
+            -VerifyScriptBlock $verifier -ReadInput $readInput -ReadSecureInput $readSecure -WriteOutput $writeOut
+        $GateResults.Add([pscustomobject]@{ GateName = $GateRef.name; ServiceName = $Manifest.name; Instructions = $gateDef.Instructions; Satisfied = $gateResult.Satisfied })
+
+        $hasEnvVar = $GateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $GateRef.envVar
+        if ($gateResult.Satisfied -and $hasEnvVar -and $gateResult.Value) { $EnvOverrides[$GateRef.envVar] = $gateResult.Value }
+        Save-GuiInstallConfig -Config $config -Path $syncHash.ConfigPath
+        return $gateResult.Satisfied
+    }
+
     function Initialize-GuiHostPaths {
         param([System.Collections.IDictionary]$Manifests, [string[]]$SelectedIds, [hashtable]$TierPaths)
         foreach ($id in $SelectedIds) {
@@ -629,41 +673,32 @@ $workerScript = {
             $addedBecauseOf = if ($resolved.AddedVia.ContainsKey($id)) { $manifests[$resolved.AddedVia[$id]].name } else { $null }
             $envOverrides = @{}
             $allGatesSatisfied = $true
+            $deferredGates = [System.Collections.Generic.List[object]]::new()
 
             foreach ($gateRef in @($manifest.manualGates)) {
                 $gateDef = Get-GateDefinition -Name $gateRef.name
 
-                if ($whatIf) {
-                    $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $gateRef.name
-                    Write-GuiLog "  [$($gateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
-                    $gateResults.Add([pscustomobject]@{ GateName = $gateRef.name; ServiceName = $manifest.name; Instructions = $gateDef.Instructions; Satisfied = $true })
+                if ($gateDef.Kind -eq 'Acknowledgment' -and $manifest.deployType -eq 'compose') {
+                    # Needs this service's own container already running
+                    # (e.g. "open Overseerr and finish its setup") -- defer
+                    # until after Deploy-Service below instead of asking
+                    # before the container even exists. Same reasoning as
+                    # install.ps1's Invoke-ServiceGate.
+                    $deferredGates.Add($gateRef)
                     continue
                 }
 
-                $verifier = Get-GuiGateVerifier -GateName $gateRef.name -Manifest $manifest -TierPaths $tierPaths
-
-                # Same reasoning as install.ps1: tailscale-login is the one
-                # gate the program can actually perform, not just describe.
-                if ($gateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
-                    Write-GuiLog '  Starting Tailscale login...'
-                    Start-TailscaleLogin
+                if (-not (Invoke-GuiServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+                    $allGatesSatisfied = $false
                 }
-
-                $readInput = { param($prompt) Show-GatePromptDialog -Prompt $prompt -Sensitive $false }.GetNewClosure()
-                $readSecure = { param($prompt) ConvertTo-SecureStringFromPlainText (Show-GatePromptDialog -Prompt $prompt -Sensitive $true) }.GetNewClosure()
-                $writeOut = { param($text) Write-GuiLog $text }.GetNewClosure()
-
-                $gateResult = Invoke-Gate -Name $gateRef.name -GateState $config.manualGates -AddedBecauseOf $addedBecauseOf `
-                    -VerifyScriptBlock $verifier -ReadInput $readInput -ReadSecureInput $readSecure -WriteOutput $writeOut
-                $gateResults.Add([pscustomobject]@{ GateName = $gateRef.name; ServiceName = $manifest.name; Instructions = $gateDef.Instructions; Satisfied = $gateResult.Satisfied })
-
-                $hasEnvVar = $gateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $gateRef.envVar
-                if ($gateResult.Satisfied -and $hasEnvVar -and $gateResult.Value) { $envOverrides[$gateRef.envVar] = $gateResult.Value }
-                if (-not $gateResult.Satisfied) { $allGatesSatisfied = $false }
-                Save-GuiInstallConfig -Config $config -Path $syncHash.ConfigPath
             }
 
             if ($manifest.deployType -eq 'manual') {
+                foreach ($gateRef in $deferredGates) {
+                    if (-not (Invoke-GuiServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+                        $allGatesSatisfied = $false
+                    }
+                }
                 $status = if ($allGatesSatisfied) { 'installed' } else { 'needs-attention' }
                 $detail = if ($allGatesSatisfied) { 'manual setup confirmed' } else { 'manual setup still outstanding' }
                 Update-GuiStatus -Id $id -Name $manifest.name -Status $status -Detail $detail
@@ -675,6 +710,12 @@ $workerScript = {
             Write-GuiLog "  $($deployResult.Action)"
 
             if ($whatIf) {
+                # Still preview the deferred (post-deploy) gates here, in
+                # the same relative position a real run would reach them,
+                # so the dry-run log order actually matches reality.
+                foreach ($gateRef in $deferredGates) {
+                    Invoke-GuiServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults | Out-Null
+                }
                 Update-GuiStatus -Id $id -Name $manifest.name -Status 'would-deploy' -Detail $deployResult.Action
                 $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'would-deploy'; Detail = $deployResult.Action })
                 continue
@@ -691,6 +732,14 @@ $workerScript = {
                 Update-GuiStatus -Id $id -Name $manifest.name -Status 'installed' -Detail $deployResult.Action
                 $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'installed'; Detail = $deployResult.Action })
                 continue
+            }
+
+            # The container is confirmed up now -- safe to run the gates
+            # that needed it running.
+            foreach ($gateRef in $deferredGates) {
+                if (-not (Invoke-GuiServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+                    $allGatesSatisfied = $false
+                }
             }
 
             $postState = Test-ServiceState -Manifest $manifest -TierPaths $tierPaths -CaddyDeployed $caddyDeployed -TailnetDomain $config.tailnetDomain

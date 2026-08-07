@@ -276,6 +276,65 @@ function Get-GateVerifier {
     }
 }
 
+function Invoke-ServiceGate {
+    <#
+    .SYNOPSIS
+        Runs one manual gate and records its result. Reads $config and
+        $ConfigPath from the enclosing script scope (this is inline
+        procedural script, not a tested module -- matches the rest of
+        install.ps1's style). -EnvOverrides is a hashtable and mutated in
+        place (hashtables are reference types), since its caller needs the
+        collected value for the Deploy-Service call that follows.
+    #>
+    param($GateRef, $Manifest, [string]$AddedBecauseOf, [hashtable]$EnvOverrides, [System.Collections.Generic.List[object]]$GateResults)
+
+    $gateDef = Get-GateDefinition -Name $GateRef.name
+
+    if ($WhatIf) {
+        # Dry-run: never blocks on real input and never mutates persisted
+        # gate state -- just reports what would be asked, per the design
+        # doc's "reviewed and regression-tested ... without requiring
+        # Docker or real services". Handled here (not by the caller) so
+        # every call site -- immediate or deferred-until-after-deploy --
+        # gets correct dry-run behavior for free, and the preview's log
+        # order actually matches what a real run would do.
+        $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $GateRef.name
+        Write-Host "  [$($GateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
+        $GateResults.Add([pscustomobject]@{
+                GateName = $GateRef.name; ServiceName = $Manifest.name
+                Instructions = $gateDef.Instructions; Satisfied = $true
+            })
+        return $true
+    }
+
+    $verifier = Get-GateVerifier -GateName $GateRef.name -Manifest $Manifest -TierPaths $tierPaths
+
+    # tailscale-login is the one gate the program can actually perform
+    # itself rather than just describe: run `tailscale up` in the
+    # background before prompting, so the user only has to complete the
+    # browser login, not type the command too. Checked against the
+    # verifier first (not just "is it marked satisfied in config") so
+    # this also covers "was logged in before, isn't anymore".
+    if ($GateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
+        Write-Host '  Starting Tailscale login...'
+        Start-TailscaleLogin
+    }
+
+    $gateResult = Invoke-Gate -Name $GateRef.name -GateState $config.manualGates -AddedBecauseOf $AddedBecauseOf -VerifyScriptBlock $verifier
+    $GateResults.Add([pscustomobject]@{
+            GateName     = $GateRef.name
+            ServiceName  = $Manifest.name
+            Instructions = $gateDef.Instructions
+            Satisfied    = $gateResult.Satisfied
+        })
+    $hasEnvVar = $GateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $GateRef.envVar
+    if ($gateResult.Satisfied -and $hasEnvVar -and $gateResult.Value) {
+        $EnvOverrides[$GateRef.envVar] = $gateResult.Value
+    }
+    Save-InstallConfig -Config $config -Path $ConfigPath
+    return $gateResult.Satisfied
+}
+
 # ---------------------------------------------------------------------------
 # One-time host bootstrap: create appdata directories so Docker never has
 # to improvise a bind-mount target, and seed a starter Caddyfile if one
@@ -398,53 +457,35 @@ foreach ($id in $order) {
     $addedBecauseOf = if ($resolved.AddedVia.ContainsKey($id)) { $manifests[$resolved.AddedVia[$id]].name } else { $null }
     $envOverrides = @{}
     $allGatesSatisfied = $true
+    $deferredGates = [System.Collections.Generic.List[object]]::new()
 
     foreach ($gateRef in @($manifest.manualGates)) {
         $gateDef = Get-GateDefinition -Name $gateRef.name
 
-        if ($WhatIf) {
-            # Dry-run: never blocks on real input and never mutates persisted
-            # gate state -- just reports what would be asked, per the design
-            # doc's "reviewed and regression-tested ... without requiring
-            # Docker or real services".
-            $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $gateRef.name
-            Write-Host "  [$($gateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
-            $gateResults.Add([pscustomobject]@{
-                    GateName = $gateRef.name; ServiceName = $manifest.name
-                    Instructions = $gateDef.Instructions; Satisfied = $true
-                })
+        if ($gateDef.Kind -eq 'Acknowledgment' -and $manifest.deployType -eq 'compose') {
+            # Needs this service's own container already running (e.g.
+            # "open Overseerr and finish its setup") -- defer until after
+            # Deploy-Service below instead of asking before the container
+            # even exists. Input-kind gates (plex-claim, backup-dest) stay
+            # here: their collected value feeds this same deploy's
+            # environment, so they have to run first. Manual-deployType
+            # services (Tailscale) have no deploy step to defer to, so
+            # their gates -- Acknowledgment or not -- are handled below too.
+            $deferredGates.Add($gateRef)
             continue
         }
 
-        $verifier = Get-GateVerifier -GateName $gateRef.name -Manifest $manifest -TierPaths $tierPaths
-
-        # tailscale-login is the one gate the program can actually perform
-        # itself rather than just describe: run `tailscale up` in the
-        # background before prompting, so the user only has to complete
-        # the browser login, not type the command too. Checked against the
-        # verifier first (not just "is it marked satisfied in config")
-        # so this also covers "was logged in before, isn't anymore".
-        if ($gateRef.name -eq 'tailscale-login' -and $verifier -and -not (& $verifier)) {
-            Write-Host '  Starting Tailscale login...'
-            Start-TailscaleLogin
+        if (-not (Invoke-ServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+            $allGatesSatisfied = $false
         }
-
-        $gateResult = Invoke-Gate -Name $gateRef.name -GateState $config.manualGates -AddedBecauseOf $addedBecauseOf -VerifyScriptBlock $verifier
-        $gateResults.Add([pscustomobject]@{
-                GateName     = $gateRef.name
-                ServiceName  = $manifest.name
-                Instructions = $gateDef.Instructions
-                Satisfied    = $gateResult.Satisfied
-            })
-        $hasEnvVar = $gateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $gateRef.envVar
-        if ($gateResult.Satisfied -and $hasEnvVar -and $gateResult.Value) {
-            $envOverrides[$gateRef.envVar] = $gateResult.Value
-        }
-        if (-not $gateResult.Satisfied) { $allGatesSatisfied = $false }
-        Save-InstallConfig -Config $config -Path $ConfigPath
     }
 
     if ($manifest.deployType -eq 'manual') {
+        foreach ($gateRef in $deferredGates) {
+            if (-not (Invoke-ServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+                $allGatesSatisfied = $false
+            }
+        }
         $status = if ($allGatesSatisfied) { 'installed' } else { 'needs-attention' }
         $detail = if ($allGatesSatisfied) { 'manual setup confirmed' } else { 'manual setup still outstanding' }
         $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = $status; Detail = $detail })
@@ -455,6 +496,12 @@ foreach ($id in $order) {
     Write-Host "  $($deployResult.Action)"
 
     if ($WhatIf) {
+        # Still preview the deferred (post-deploy) gates here, in the same
+        # relative position a real run would reach them, so the dry-run
+        # log order actually matches what a real run would do.
+        foreach ($gateRef in $deferredGates) {
+            Invoke-ServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults | Out-Null
+        }
         $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'would-deploy'; Detail = $deployResult.Action })
         continue
     }
@@ -467,6 +514,14 @@ foreach ($id in $order) {
     if ($manifest.deployType -eq 'dockerNetwork') {
         $results.Add([pscustomobject]@{ Id = $id; Name = $manifest.name; Status = 'installed'; Detail = $deployResult.Action })
         continue
+    }
+
+    # The container is confirmed up now -- safe to run the gates that
+    # needed it running (e.g. "open Overseerr and finish its setup").
+    foreach ($gateRef in $deferredGates) {
+        if (-not (Invoke-ServiceGate -GateRef $gateRef -Manifest $manifest -AddedBecauseOf $addedBecauseOf -EnvOverrides $envOverrides -GateResults $gateResults)) {
+            $allGatesSatisfied = $false
+        }
     }
 
     $postState = Test-ServiceState -Manifest $manifest -TierPaths $tierPaths -CaddyDeployed $caddyDeployed -TailnetDomain $config.tailnetDomain

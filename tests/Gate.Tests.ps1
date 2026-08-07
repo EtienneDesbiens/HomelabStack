@@ -14,6 +14,28 @@
 $moduleRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $moduleRoot 'lib\Gate.psm1') -Force
 
+Describe 'Invoke-Gate -Instructions override' {
+
+    It 'uses the override text instead of the gate table default when given' {
+        $state = @{}
+        $box = @{ written = $null }
+        Invoke-Gate -Name 'router-dns' -GateState $state `
+            -Instructions 'Open AdGuard Home at http://localhost:3000 and note its IP.' `
+            -ReadInput { param($p) '' } `
+            -WriteOutput { param($t) if ($t -match '\[router-dns\]') { $box.written = $t } }.GetNewClosure() | Out-Null
+        $box.written | Should Match 'http://localhost:3000'
+    }
+
+    It 'falls back to the gate table default when no override is given' {
+        $state = @{}
+        $box = @{ written = $null }
+        Invoke-Gate -Name 'router-dns' -GateState $state `
+            -ReadInput { param($p) '' } `
+            -WriteOutput { param($t) if ($t -match '\[router-dns\]') { $box.written = $t } }.GetNewClosure() | Out-Null
+        $box.written | Should Match "AdGuard Home's address"
+    }
+}
+
 Describe 'Invoke-Gate input gates' {
 
     It 'prompts and records a value on first invocation' {

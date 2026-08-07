@@ -290,6 +290,20 @@ function Invoke-ServiceGate {
 
     $gateDef = Get-GateDefinition -Name $GateRef.name
 
+    # Fold the service's own URL into the instructions for Acknowledgment
+    # gates ("open X and do Y") so the message is actionable on its own --
+    # not just naming the app. Input-kind gates (plex-claim, backup-dest)
+    # are left alone: their "URL" is external (plex.tv) or not a single
+    # app at all (a backup destination).
+    $effectiveInstructions = $gateDef.Instructions
+    if ($gateDef.Kind -eq 'Acknowledgment') {
+        $urls = Get-ServiceUrls -Manifest $Manifest -CaddyDeployed $caddyDeployed -TailnetDomain $tierPaths.TailnetDomain
+        if ($urls.Direct) {
+            $urlText = if ($urls.Proxied) { "$($urls.Direct) (or $($urls.Proxied))" } else { $urls.Direct }
+            $effectiveInstructions = "$($gateDef.Instructions) $urlText"
+        }
+    }
+
     if ($WhatIf) {
         # Dry-run: never blocks on real input and never mutates persisted
         # gate state -- just reports what would be asked, per the design
@@ -299,10 +313,10 @@ function Invoke-ServiceGate {
         # gets correct dry-run behavior for free, and the preview's log
         # order actually matches what a real run would do.
         $alreadySatisfied = Test-GateSatisfied -GateState $config.manualGates -Name $GateRef.name
-        Write-Host "  [$($GateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $($gateDef.Instructions)"
+        Write-Host "  [$($GateRef.name)] would $(if ($alreadySatisfied) { 're-check' } else { 'prompt' }): $effectiveInstructions"
         $GateResults.Add([pscustomobject]@{
                 GateName = $GateRef.name; ServiceName = $Manifest.name
-                Instructions = $gateDef.Instructions; Satisfied = $true
+                Instructions = $effectiveInstructions; Satisfied = $true
             })
         return $true
     }
@@ -320,11 +334,11 @@ function Invoke-ServiceGate {
         Start-TailscaleLogin
     }
 
-    $gateResult = Invoke-Gate -Name $GateRef.name -GateState $config.manualGates -AddedBecauseOf $AddedBecauseOf -VerifyScriptBlock $verifier
+    $gateResult = Invoke-Gate -Name $GateRef.name -GateState $config.manualGates -AddedBecauseOf $AddedBecauseOf -Instructions $effectiveInstructions -VerifyScriptBlock $verifier
     $GateResults.Add([pscustomobject]@{
             GateName     = $GateRef.name
             ServiceName  = $Manifest.name
-            Instructions = $gateDef.Instructions
+            Instructions = $effectiveInstructions
             Satisfied    = $gateResult.Satisfied
         })
     $hasEnvVar = $GateRef.PSObject.Properties.Match('envVar').Count -gt 0 -and $GateRef.envVar

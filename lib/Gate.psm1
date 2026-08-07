@@ -179,12 +179,23 @@ function Invoke-Gate {
         Docker/HTTP/Tailscale itself -- that logic lives in Validate.psm1
         or install.ps1 and is handed in here to avoid a circular module
         dependency.
+
+    .PARAMETER Instructions
+        Overrides the gate's own central Instructions text for this call.
+        For the same reason Gate.psm1 takes VerifyScriptBlock rather than
+        knowing about HTTP itself: the caller (install.ps1/install-gui.ps1)
+        knows the specific service's actual URL from its manifest, and can
+        fold that into a concrete instruction ("Open Prowlarr at
+        http://localhost:9696 and add your indexer accounts.") instead of
+        this module needing to know anything about manifests or Docker.
+        Defaults to the gate's own Instructions text when not given.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][hashtable]$GateState,
         [string]$AddedBecauseOf,
+        [string]$Instructions,
         [scriptblock]$VerifyScriptBlock,
         [scriptblock]$ReadInput = { param($prompt) Read-Host -Prompt $prompt },
         [scriptblock]$ReadSecureInput = { param($prompt) Read-Host -Prompt $prompt -AsSecureString },
@@ -193,13 +204,14 @@ function Invoke-Gate {
     )
 
     $def = Get-GateDefinition -Name $Name
+    if (-not $Instructions) { $Instructions = $def.Instructions }
     $context = if ($AddedBecauseOf) { " (added as a dependency of $AddedBecauseOf)" } else { '' }
 
     if ($def.Kind -eq 'Input') {
         if (Test-GateSatisfied -GateState $GateState -Name $Name) {
             return [pscustomobject]@{ Satisfied = $true; Value = $null; Reason = 'already-satisfied' }
         }
-        & $WriteOutput "`n[$($def.Name)]$context $($def.Instructions)"
+        & $WriteOutput "`n[$($def.Name)]$context $Instructions"
         $value = if ($def.Sensitive) {
             $secure = & $ReadSecureInput $def.Prompt
             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
@@ -224,7 +236,7 @@ function Invoke-Gate {
         & $WriteOutput "`n[$($def.Name)] Previously acknowledged, but the live check now fails -- this needs attention again."
     }
 
-    & $WriteOutput "`n[$($def.Name)]$context $($def.Instructions)"
+    & $WriteOutput "`n[$($def.Name)]$context $Instructions"
     $attempt = 0
     while ($true) {
         $attempt++

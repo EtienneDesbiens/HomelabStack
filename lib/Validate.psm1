@@ -472,10 +472,51 @@ function Test-ServiceState {
     [pscustomobject]@{ Id = $Manifest.id; Status = $overall; Detail = $detail; Checks = $checks }
 }
 
+function Get-ServiceUrls {
+    <#
+    .SYNOPSIS
+        Returns the direct (and, if applicable, proxied) URL a manifest's
+        own service is reachable at, derived from its validate.httpCheck
+        block -- the same block Test-ServiceState already uses to reach
+        it. Lets a gate's instructions be concrete ("Open Prowlarr at
+        http://localhost:9696") instead of just naming the app, without
+        Gate.psm1 needing to know anything about manifests or HTTP.
+
+        Both properties are $null when the manifest has no httpCheck at
+        all (e.g. Tailscale, a host-level app with no web UI of its own),
+        and .Proxied is $null unless Caddy is deployed and a tailnet
+        domain is actually configured -- matching Test-ServiceState's own
+        rule for when the proxied hostname is meaningful.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [bool]$CaddyDeployed = $false,
+        [string]$TailnetDomain = ''
+    )
+
+    $direct = $null
+    $proxied = $null
+
+    $hasValidate = $Manifest.PSObject.Properties.Match('validate').Count -gt 0
+    if ($hasValidate -and $Manifest.validate.PSObject.Properties.Match('httpCheck').Count -gt 0) {
+        $hc = $Manifest.validate.httpCheck
+        if ($hc.PSObject.Properties.Match('direct').Count -gt 0) {
+            $direct = $hc.direct.url -replace '^(https?://[^/]+).*$', '$1'
+        }
+        if ($hc.PSObject.Properties.Match('proxied').Count -gt 0 -and $CaddyDeployed -and -not [string]::IsNullOrWhiteSpace($TailnetDomain)) {
+            $proxiedHost = $hc.proxied.hostTemplate -replace '\{tailnetDomain\}', $TailnetDomain
+            $proxied = "https://$proxiedHost"
+        }
+    }
+
+    [pscustomobject]@{ Direct = $direct; Proxied = $proxied }
+}
+
 Export-ModuleMember -Function `
     Get-ValidateDockerRunner, Set-ValidateDockerRunner, `
     Get-HttpChecker, Set-HttpChecker, `
     Get-FileTester, Set-FileTester, `
     Get-FileContentReader, Set-FileContentReader, `
     Resolve-ManifestPath, Test-ContainerHealth, Test-HttpReachability, `
-    Resolve-ApiKey, Invoke-ConfigCheck, Test-VolumePaths, Test-ServiceState
+    Resolve-ApiKey, Invoke-ConfigCheck, Test-VolumePaths, Test-ServiceState, Get-ServiceUrls
